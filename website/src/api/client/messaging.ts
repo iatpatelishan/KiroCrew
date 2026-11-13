@@ -40,8 +40,11 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
   /** `slack.code_channel_dispatch`: let a code channel's conductor hand work to
-   *  worker sessions. Its own opt-in under Code channels; off by default. */
+   *  worker sessions. The sub-toggle under Code channels; off when unset. */
   code_channel_dispatch?: boolean
+  /** Turning Code channels on now also turns helper agents on: neither config
+   *  file stores a value yet (an explicit off is kept). Absent reads as false. */
+  code_channel_dispatch_on_enable?: boolean
   /** `config.local.json` sets `slack.code_channel_dispatch`, so a save here cannot
    *  change it (the server refuses one with 409). */
   code_channel_dispatch_overlay?: boolean

@@ -33,6 +33,17 @@ superseded-by: []
   nothing, whatever its helper agents are doing. The code follows in its own pull
   request, after
   [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993).
+- Amended 2026-11-13: helper agents (`slack.code_channel_dispatch`) turn on with
+  a first enable of Code channels. The owner asked for this ("this should be on
+  by default"), after a code channel refused with "This code channel isn't
+  allowed to open helper chats". A settings save that newly turns Code channels
+  on also saves helper agents on, and the settings text says so, unless a value
+  is already stored: an explicit off is kept, and an existing install keeps what
+  it has (no upgrade flips it). An unset, unreadable or malformed value still
+  reads as off, and so does an unreadable `config.local.json`, where the save
+  writes nothing for helper agents. The owner-only, workspace and approval-mode
+  limits on helper agents do not change. Rejected: turning it on for existing
+  installs by changing the stored default. Built in the same pull request.
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -484,7 +495,10 @@ switch off.
 
 ## Backward compatibility
 
-Every switch defaults off. With all of them off, the rendered manifest and the deep-link
+Every switch defaults off. The one setting that follows a switch is helper agents
+(`slack.code_channel_dispatch`, amended 2026-11-13): a first enable of Code channels
+saves it on, a stored value is kept, and an unset one reads off, so an existing
+install changes nothing on upgrade. With all of them off, the rendered manifest and the deep-link
 payload are byte-identical to before (pinned by a test), so an existing app needs
 no change and `kirocrew manifest` prints what it always printed. With a switch on
 but its scope not yet granted, or Slack answering `feature_disabled`, the runtime
