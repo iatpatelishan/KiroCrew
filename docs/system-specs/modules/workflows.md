@@ -1030,7 +1030,10 @@ Properties that matter:
 - **Explicit checkpoint failures:** serialization/write/replace failures propagate
   as fixed sanitized errors while live execution results remain available.
   Recovery retains ordinary descriptor/path/owner checks, rejects malformed
-  records and returns records oldest-first. Inventory access failures propagate;
+  records and returns records oldest-first by the start time of the run's first
+  event (read as an epoch, so every timestamp form compares on one scale), then by
+  file write time. A record with no event yet, or an unreadable timestamp, ranks by
+  its write time, which is when it was admitted. Inventory access failures propagate;
   corrupt individual records cannot manufacture a replacement member identity.
 
 `RunRegistry.load_persisted()` rehydrates on startup, fills only ids not already

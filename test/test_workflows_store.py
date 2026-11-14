@@ -144,3 +144,67 @@ def test_no_store_is_pure_in_memory(tmp_path) -> None:
     assert reg.load_persisted() == 0  # nothing to load, no crash
     # and no files were created anywhere we control
     assert not list(Path(tmp_path).glob("**/*.json"))
+
+
+def test_the_run_list_keeps_its_order_across_a_restart(tmp_path) -> None:
+    """Runs reload in the order they started, not the order their files were written."""
+    import os
+
+    store = _store(tmp_path)
+    reg_a = RunRegistry(store=store)
+    for rid, started in (
+        ("wf_000001", "2026-01-01T00:00:00Z"),
+        ("wf_000002", "2026-01-01T01:00:00Z"),
+    ):
+        _seed(reg_a, rid)
+        reg_a.record_event(
+            rid, WorkflowEvent(run_id=rid, seq=0, ts=started, type="run_started", data={})
+        )
+        reg_a.mark_terminal(rid, STATUS_FINISHED, result=1)
+    assert [s["run_id"] for s in reg_a.list()] == ["wf_000002", "wf_000001"]
+    # The older run finished last, so its file is the newest on disk.
+    for rid, mtime in (("wf_000002", 1_000_000_000), ("wf_000001", 1_000_000_100)):
+        os.utime(tmp_path / "runs" / f"{rid}.json", (mtime, mtime))
+
+    reg_b = RunRegistry(store=_store(tmp_path))
+    reg_b.load_persisted()
+    assert [s["run_id"] for s in reg_b.list()] == ["wf_000002", "wf_000001"]
+
+
+def test_a_run_with_no_event_yet_is_ranked_by_when_it_was_admitted(tmp_path) -> None:
+    """A run restarted before its first checkpoint still lists as the newest run."""
+    import os
+
+    reg_a = RunRegistry(store=_store(tmp_path))
+    _seed(reg_a, "wf_000001")
+    reg_a.record_event(
+        "wf_000001",
+        WorkflowEvent(
+            run_id="wf_000001",
+            seq=0,
+            ts="2026-01-01T00:00:00+00:00",
+            type="run_started",
+            data={},
+        ),
+    )
+    reg_a.mark_terminal("wf_000001", STATUS_FINISHED, result=1)
+    _seed(reg_a, "wf_000002")  # admitted an hour later, no event written yet
+    for rid, mtime in (("wf_000001", 1_767_225_700), ("wf_000002", 1_767_229_200)):
+        os.utime(tmp_path / "runs" / f"{rid}.json", (mtime, mtime))
+
+    reg_b = RunRegistry(store=_store(tmp_path))
+    reg_b.load_persisted()
+    assert [s["run_id"] for s in reg_b.list()] == ["wf_000002", "wf_000001"]
+
+
+def test_start_order_reads_every_timestamp_form_on_one_scale() -> None:
+    from kiro_crew.workflows.store import _start_order
+
+    def start(ts, mtime=500.0):
+        return _start_order((mtime, {"events": [{"ts": ts}]}))[0]
+
+    assert start("2026-01-01T00:00:00Z") == start("2026-01-01T00:00:00+00:00")
+    assert start("2026-01-01T00:00:00") == start("2026-01-01T00:00:00Z")  # no zone is UTC
+    assert start("2026-01-01T01:00:00+01:00") == start("2026-01-01T00:00:00Z")
+    assert start("not a time") == 500.0  # unreadable: the write time stands in
+    assert _start_order((500.0, {"events": []}))[0] == 500.0
