@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.slot_read_state import read_state_of
 from kiro_crew.dashboard.slot_row_memo import ROW_MEMO, RowMemoContext
 from kiro_crew.dashboard.state_parts.slot_directory import _is_genuine_slack_link
 from kiro_crew.messaging.link import (
@@ -972,6 +973,8 @@ def serialize_slot(
             "pin_rev": self._pinned_order_rev,
             "manual_rank": manual.rank(slot.key),
             "manual_rev": manual.rev,
+            "last_read_ts": read_state_of(self).row_read_ts(slot.key),
+            "read_epoch": read_state_of(self).row_read_epoch(),
             "links": links,
             "slack_linked": slack_linked,
             "slack_channel": slack_channel,
