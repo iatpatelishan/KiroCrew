@@ -1037,6 +1037,25 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     `host_addresses.py`.
   - `argv_floor_ssh.py` — the ssh self-target floor (`_is_ssh_to_self`), which reads
     the frame walk and the host verdicts below it.
+  - `argv_floor_ssh_bodies.py` — the floor's reading of substitution bodies
+    (`_reaches_self_over_ssh`). The static splice reads only the first command of a
+    `$( )` or backtick body, so `$(echo hi; ssh -p 22 <this host> id)` would splice to
+    `hi`. Each body that bash runs (unquoted, in double quotes, in an unquoted heredoc,
+    nested, or inside a `bash -c`, `sh -c`, `eval` or here-string payload) is judged
+    here as a command line of its own. The shared reader supplies quote state,
+    comments and heredoc spans. An unquoted heredoc body's substitutions come from
+    `shell_commands._heredoc_body_substitutions`, the one scan `read_commands` also
+    reads them with, so the two never disagree about which bodies bash runs. Bodies
+    are judged one level at a time: a deeper body
+    the splice cannot resolve is replaced by one word and judged on its own turn, so
+    the work grows linearly with nesting depth. This reading only adds refusals. An
+    escaped backtick span (`` echo \`echo hi; ssh … id\` ``) is data on its own line,
+    so `_is_ssh_to_self` leaves it unspliced there and also judges the spliced reading,
+    which is what runs one quoting level down (`eval "ssh -p 22 \`printf localhost\`"`).
+    Known residuals fail closed: a body is refused when the floor already refuses it as a
+    plain line, though bash runs no ssh, for a glued `;echo`, a `#` comment, the text
+    a `cat` prints from an unquoted-tag heredoc, and an escaped `\;`
+    (`test_known_fail_closed_residuals_are_refused`).
   - `argv_floor_git.py` — protected or ambiguous git-publish detection.
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,

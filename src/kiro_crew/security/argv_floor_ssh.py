@@ -31,7 +31,6 @@ from typing import Callable
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
-    _quoted_assignment_scripts,
     _self_token_frames,
     _static_substitution_output,
 )
@@ -133,6 +132,44 @@ def _glob_can_name_ssh_verb(probe: str) -> bool:
             if fnmatch.fnmatchcase(verb, base) or fnmatch.fnmatchcase(verb + ".exe", base):
                 return True
     return False
+
+
+def _may_name_ssh_verb(text: str) -> bool:
+    """The floor's verb gate: False only when *text* cannot name an ssh-family program.
+
+    Quote and backslash splices (``ss""h``, ``s\\sh``) and ANSI-C quoting are undone
+    first, and ``${VAR:-word}`` defaults are substituted, the way bash builds the word
+    before exec.
+    """
+    probe = _decode_shell_quoted_literals(text)
+    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
+    probe = _resolve_param_defaults(probe)
+    return any(verb in probe for verb in _SSH_FAMILY_VERBS) or _glob_can_name_ssh_verb(probe)
+
+
+def _escaped(text: str, at: int) -> bool:
+    """True when the character at *at* follows an odd run of backslashes."""
+    slashes = at
+    while slashes > 0 and text[slashes - 1] == "\\":
+        slashes -= 1
+    return (at - slashes) % 2 == 1
+
+
+def _splice_static_substitutions(text: str, *, escaped_too: bool = False) -> str:
+    """*text* with each flat ``echo``/``printf`` substitution replaced by its static output.
+
+    A backtick span whose opening backtick is escaped is data on this line, so it
+    stays as written unless *escaped_too*: one quoting level down (an ``eval`` or
+    ``sh -c`` payload, an outer double quote) the backslash is gone and bash runs it.
+    """
+
+    def _splice(match: "re.Match[str]") -> str:
+        body = match.group(1) if match.group(1) is not None else match.group(2)
+        out = _static_substitution_output(body)
+        escaped = match.group(2) is not None and _escaped(text, match.start())
+        return match.group(0) if out == "\x00" or (escaped and not escaped_too) else out
+
+    return _FLAT_SUBSTITUTION_RE.sub(_splice, text)
 
 
 # ``${VAR:-word}`` / ``${VAR:=word}`` / ``${VAR:+word}`` — bash substitutes the
@@ -1012,13 +1049,6 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
-def _reaches_self_over_ssh(text_lower: str) -> bool:
-    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
-    read whole: the separator mask would turn a script's own separators into data."""
-    scripts = _quoted_assignment_scripts(text_lower)
-    return _is_ssh_to_self(text_lower, own_line=True) or any(map(_is_ssh_to_self, scripts))
-
-
 # How many :func:`_is_ssh_to_self` readings may be open at once. Each nested
 # double-quoted ``$( )``, bound function body or carried value opens one more, so
 # a crafted command could otherwise nest past Python's recursion limit.
@@ -1032,13 +1062,13 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
     """*read*, refused (True) once ``_MAX_SSH_READING_DEPTH`` readings are open."""
 
     @functools.wraps(read)
-    def bounded(text_lower: str, *, own_line: bool = False) -> bool:
+    def bounded(text_lower: str, *, own_line: bool = False, escapes_read: bool = False) -> bool:
         depth = _ssh_reading_depth.get()
         if depth >= _MAX_SSH_READING_DEPTH:
             return True
         token = _ssh_reading_depth.set(depth + 1)
         try:
-            return read(text_lower, own_line=own_line)
+            return read(text_lower, own_line=own_line, escapes_read=escapes_read)
         finally:
             _ssh_reading_depth.reset(token)
 
@@ -1046,7 +1076,7 @@ def _bounded_ssh_reading(read: "Callable[..., bool]") -> "Callable[..., bool]":
 
 
 @_bounded_ssh_reading
-def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
+def _is_ssh_to_self(text_lower: str, *, own_line: bool = False, escapes_read: bool = False) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
     Structural for the same reason the other floors are: the target hides
@@ -1108,13 +1138,14 @@ def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     # literals; every other body keeps its original text (the ``$(hostname``
     # hints below read it) and stays the documented run-time residual.  A
     # single-quoted spelling resolves too -- an over-approximation toward
-    # deny, accepted for a deny floor.
-    def _splice_static_substitution(match: "re.Match[str]") -> str:
-        body = match.group(1) if match.group(1) is not None else match.group(2)
-        out = _static_substitution_output(body)
-        return match.group(0) if out == "\x00" else out
-
-    text_lower = _FLAT_SUBSTITUTION_RE.sub(_splice_static_substitution, text_lower)
+    # deny, accepted for a deny floor.  An escaped backtick span is data on this
+    # line but runs one quoting level down (``eval "ssh \`printf localhost\`"``),
+    # so the reading that splices it too is judged beside.
+    spliced = _splice_static_substitutions(text_lower)
+    both = spliced if escapes_read else _splice_static_substitutions(text_lower, escaped_too=True)
+    if both != spliced and _is_ssh_to_self(both, own_line=literal, escapes_read=True):
+        return True
+    text_lower = spliced
     # Substitute ``$a``/``${a}`` from literal same-line assignments
     # (``a=s; ${a}sh localhost`` -> ``ssh localhost``) so neither the verb nor
     # the operand can be spliced from statically-known text.  Values are
@@ -1136,14 +1167,11 @@ def _is_ssh_to_self(text_lower: str, *, own_line: bool = False) -> bool:
     # before exec, and the operand walk's tokenizer resolves it too -- so the
     # gate guarding that walk probes the DECODED text, or a verb spelling the
     # walk would deny slips past the gate the walk never gets to correct.
-    probe = _decode_shell_quoted_literals(text_lower)
-    probe = probe.replace('"', "").replace("'", "").replace("\\", "")
     # bash substitutes ``${VAR:-word}`` defaults before exec, so the verb can
     # be spliced from statically-known text (``s${U:-s}h`` -> ``ssh``).
     # Resolve the same forms the operand walk resolves; a bare ``$VAR`` whose
     # value exists only at run time stays the documented fail-open residual.
-    probe = _resolve_param_defaults(probe)
-    if not any(verb in probe for verb in _SSH_FAMILY_VERBS) and not _glob_can_name_ssh_verb(probe):
+    if not _may_name_ssh_verb(text_lower):
         return False
     # Bind one level of function-call arguments (``f(){ ssh "$1"
     # id; }; f localhost``) and recurse on the bound body -- the literal call
