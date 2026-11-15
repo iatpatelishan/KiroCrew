@@ -12,6 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
+import { useMemoryProviderPreviewSetting } from './memoryProviderPreviewSetting'
 import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, PREVIEW_WORKER_GRILL, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
@@ -213,6 +214,12 @@ export function FeaturePreviewsSection() {
   // The stored choice and what this gateway started with disagree: a restart applies it.
   const sharedCrewNeedsRestart = !!sharedCrewSetting && (sharedCrewSetting.restart_required
     || (!sharedCrewSetting.env_override && sharedCrewSetting.enabled !== sharedCrewSetting.active))
+  // The memory provider switch is the same kind of keystone switch, so it shares the restart.
+  const memoryProviderPreview = useMemoryProviderPreviewSetting({ poll: gatewayRestarting })
+  const memoryProviderSetting = memoryProviderPreview.setting
+  const memoryProviderNeedsRestart = !!memoryProviderSetting && (memoryProviderSetting.restart_required
+    || (!memoryProviderSetting.env_override && memoryProviderSetting.enabled !== memoryProviderSetting.active))
+  const previewNeedsRestart = sharedCrewNeedsRestart || memoryProviderNeedsRestart
   // A dropped restart response is ambiguous until the setting can be read back.
   const restartRefusal = useRestartRefusal(() => {
     setGatewayRestarting(false)
@@ -249,10 +256,10 @@ export function FeaturePreviewsSection() {
   }, [gatewayRestarting])
 
   useEffect(() => {
-    if (sharedCrewNeedsRestart) return
+    if (previewNeedsRestart) return
     setGatewayRestarting(false)
     setRestartFailed(false)
-  }, [sharedCrewNeedsRestart])
+  }, [previewNeedsRestart])
   // The KAS engine card is for a deployment that can select KAS at all: the same
   // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
   // unanswered schema hides nothing, as on the harness tab.
@@ -330,6 +337,40 @@ export function FeaturePreviewsSection() {
             {sharedCrewPreview.loadError && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.preview_load_failed')} testId="shared-crew-preview-load-error" />}
             {sharedCrewPreview.saveFailed && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.preview_save_failed')} testId="shared-crew-preview-save-error" />}
             {restartFailed && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.preview_restart_failed')} testId="shared-crew-preview-restart-error" />}
+          </div>
+        )}
+        {/* Memory providers (an app serving, replacing or managing Crew's memory). The
+            same keystone switch as Shared Crew's above, behind
+            `/api/memory/provider-preview`, applied on the next gateway start. */}
+        {memoryProviderPreview.visible && (
+          <div>
+            <SettingsToggle
+              label={i18nT('pages.overview.memoryProvider.preview_title')}
+              description={i18nT('pages.overview.memoryProvider.preview_desc')}
+              descriptionBadge={
+                <Badge variant="warn" className="text-[11px] font-sans px-1.5 py-0">
+                  {i18nT('pages.settings.developerPanel.restart_badge')}
+                </Badge>
+              }
+              checked={!!memoryProviderSetting && (memoryProviderSetting.env_override || memoryProviderSetting.enabled)}
+              disabled={!memoryProviderSetting || memoryProviderSetting.env_override || memoryProviderPreview.saving}
+              onChange={memoryProviderPreview.set}
+            />
+            {memoryProviderSetting?.env_override && (
+              <p className="text-[12px] text-muted pt-1" data-testid="memory-provider-preview-env">{i18nT('sharedCrew.preview_env_on')}</p>
+            )}
+            {memoryProviderNeedsRestart && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1" data-testid="memory-provider-preview-restart">
+                <span className="text-[12px] text-warn">{i18nT('sharedCrew.preview_restart_notice')}</span>
+                <Btn onClick={() => restartGateway.mutate()} disabled={restartGateway.isPending || gatewayRestarting} data-testid="memory-provider-preview-restart-button">
+                  {restartGateway.isPending || gatewayRestarting ? i18nT('sharedCrew.preview_restarting') : i18nT('sharedCrew.preview_restart')}
+                </Btn>
+              </div>
+            )}
+            {/* The hand-off is safe here: the section holds no draft input. */}
+            {memoryProviderPreview.loadError && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.adv_load_failed')} testId="memory-provider-preview-load-error" />}
+            {memoryProviderPreview.saveFailed && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.adv_save_failed')} testId="memory-provider-preview-save-error" />}
+            {restartFailed && memoryProviderNeedsRestart && <ErrorNotice variant="inline" askAgent message={i18nT('sharedCrew.preview_restart_failed')} testId="memory-provider-preview-restart-error" />}
           </div>
         )}
         {/* A chat dispatched to another MACHINE over the instances tunnel.
