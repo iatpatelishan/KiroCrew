@@ -260,7 +260,17 @@ async def _run_eval(args: argparse.Namespace) -> None:
 
     Exits 1 when a scenario name is unknown (nothing runs) or when any scenario
     fails (after the report is written); returns normally when every one passes.
+    ``capture KEY`` as the first name saves a recorded chat as a scenario instead
+    (``eval.capture``) and exits with that command's code.
     """
+
+    if (getattr(args, "scenarios", None) or [])[:1] == ["capture"] and not getattr(
+        args, "all_scenarios", False
+    ):
+        # `kirocrew eval capture KEY` saves a recorded chat as a scenario file; it runs nothing.
+        from kiro_crew.eval.capture import run_capture
+
+        sys.exit(await asyncio.to_thread(run_capture, args))
 
     scenarios = await asyncio.to_thread(_load_eval_scenarios, args)
     if scenarios is None:
