@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _THINKING_PLACEHOLDER,
         ACTIVATION_REVIEW,
         DELIVERY_DEBT_NOTICE,
+        OPTIONS_RE_LINE,
         SLACK_MSG_LIMIT,
         TRUNCATION_NOTICE,
         LLMEvent,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
         redact,
         redact_credentials,
         redact_exfiltration_urls,
+        relocate_glued_tail_marker,
         seal_stream,
         split_message,
         strip_control_comments,
@@ -108,6 +110,11 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
     as the diverging byte arrives -- and that byte is then processed on its
     own, so a ``[`` that ends a hold still opens the bracket-hold.
     """
+    # A ``[`` is held only while it can still spell an OPTIONS head; once it
+    # cannot, it is ordinary text and is released at once. A head ends at the
+    # closer that balances it; one still open at its line's end, or at the end of
+    # the turn, is decided by the line grammar (``OPTIONS_RE_LINE``).
+    head = "[OPTIONS:"
     for ch in text:
         if bracket_hold and bracket_hold[0] == "<":
             if _comment_hold_is_protocol(bracket_hold + ch):
@@ -119,19 +126,50 @@ def _filter_options_brackets(text: str, bracket_hold: str, stream_buffer: str) -
             bracket_hold = ""
         if bracket_hold:
             bracket_hold += ch
-            if ch == "]":
-                if bracket_hold.startswith("[OPTIONS:"):
-                    bracket_hold = ""
-                else:
+            if not bracket_hold.startswith(head):
+                if head.startswith(bracket_hold):
+                    continue
+                # Not an OPTIONS tag: release the bracket as written, and judge
+                # the byte that proved it on its own (it may open the next one).
+                stream_buffer += bracket_hold[:-1]
+                bracket_hold = ""
+            elif ch == "]" and bracket_hold.count("[") == bracket_hold.count("]"):
+                # The tag ends at the closer that balances it, so a label's own
+                # pair (``list[0]``) never ends it early; a candidate the grammar
+                # refuses (a pair nested deeper than one level) is text.
+                if OPTIONS_RE_LINE.search(bracket_hold) is None:
                     stream_buffer += bracket_hold
-                    bracket_hold = ""
-        elif ch == "[":
+                bracket_hold = ""
+                continue
+            elif ch == "\n":
+                # A head still open at its line's end: the line grammar decides it,
+                # dropping a marker it accepts (a lookalike closer) and releasing
+                # every other byte; then the break is judged on its own.
+                stream_buffer += OPTIONS_RE_LINE.sub("", bracket_hold[:-1])
+                bracket_hold = ""
+            else:
+                continue
+        if ch == "[":
             bracket_hold = ch
         elif ch == "<" and _at_tag_line_start(stream_buffer):
             bracket_hold = ch
         else:
             stream_buffer += ch
     return bracket_hold, stream_buffer
+
+
+def _resolve_options_hold(bracket_hold: str) -> tuple[str, str]:
+    """Settle a ``[`` hold when the stream ENDS; returns *(hold, release)*.
+
+    A ``[`` hold left at the end is a head that never balanced, or a bare head
+    prefix. It is the reply's last line, so the shared grammar decides it the way
+    delivery does: an accepted marker (a glued tail moved above it first) is
+    removed, and every other byte is released as text. A comment hold is not this
+    function's.
+    """
+    if not bracket_hold or bracket_hold[0] != "[":
+        return bracket_hold, ""
+    return "", OPTIONS_RE_LINE.sub("", relocate_glued_tail_marker(bracket_hold))
 
 
 def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str]:
@@ -1035,9 +1073,9 @@ class _AnswerStream:
     async def finish(self, untrimmed: str) -> None:
         """Complete the last task card and send what the stream still holds.
 
-        A ``[`` hold is excluded — it's either a suppressed OPTIONS tag or an unclosed
-        bracket we drop; a comment hold is settled against the whole reply and
-        released when it is content.
+        A ``[`` hold is settled by the marker grammar: an accepted marker is
+        dropped and anything else is sent; a comment hold is settled against the
+        whole reply and released when it is content.
         """
         # Mark last task complete
         self.finishing = True
@@ -1048,6 +1086,8 @@ class _AnswerStream:
             _ct = f"{self.active_task_title}  {_elapsed}" if _elapsed else self.active_task_title
             await self.append_task(self.active_task_id, _ct, "complete")
         self.bracket_hold, _released = _resolve_comment_hold(self.bracket_hold, untrimmed)
+        self.stream_buffer += _released
+        self.bracket_hold, _released = _resolve_options_hold(self.bracket_hold)
         self.stream_buffer += _released
         if self.stream_buffer:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
