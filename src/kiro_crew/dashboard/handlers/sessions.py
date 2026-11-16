@@ -182,6 +182,27 @@ if TYPE_CHECKING:
         _reset_all_sessions,
         api_sessions_restart,
     )
+    from kiro_crew.dashboard.handlers.sessions_parts.message_search import (  # noqa: F401
+        _BAD_TIME,
+        _ROW_FIELDS,
+        MAX_HITS_PER_SESSION,
+        MAX_SESSIONS,
+        ROLE_FILTERS,
+        SNIPPET_LEAD,
+        SNIPPET_MAX,
+        SNIPPET_TRAIL,
+        _epoch_param,
+        _excerpt,
+        _keeps_session,
+        _limit_param,
+        _iso_epoch,
+        _redacted,
+        _search,
+        api_sessions_search_messages,
+        MessageQuery,
+        message_hits,
+        message_query,
+    )
     import kiro_crew.dashboard.handlers as _h  # noqa: F401
     from kiro_crew import agent_spec_pins  # noqa: F401
     from kiro_crew import hooks  # noqa: F401
@@ -232,6 +253,12 @@ if TYPE_CHECKING:
     from kiro_crew.history_search import SearchRows  # noqa: F401
     from kiro_crew.history_search import search_candidate_cap  # noqa: F401
     from kiro_crew.history_search import search_coverage  # noqa: F401
+    from kiro_crew.history_search import SearchNeedle  # noqa: F401
+    from kiro_crew.history_search import needles_match_text  # noqa: F401
+    from kiro_crew.history_search import parse_search_query  # noqa: F401
+    from kiro_crew.history_search import snippet_needle_tiers  # noqa: F401
+    from kiro_crew.history_search import split_title_scope  # noqa: F401
+    from kiro_crew.history_search import tiered_first_hit  # noqa: F401
     from kiro_crew.kiro_cli import chat_agent_engines_at  # noqa: F401
     from kiro_crew.kiro_cli import pin_kiro_cli  # noqa: F401
     from kiro_crew.label_guard import PROSE_OPENERS  # noqa: F401
@@ -1915,6 +1942,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.sessions_parts.live_turn",
     "kiro_crew.dashboard.handlers.sessions_parts.tool_policy",
     "kiro_crew.dashboard.handlers.sessions_parts.restart",
+    "kiro_crew.dashboard.handlers.sessions_parts.message_search",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)

@@ -44,6 +44,7 @@ import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { stepTurn } from '../pages/chat/turnStep'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import { openGlobalChatSearch } from '../components/globalChatSearch/globalChatSearchStore'
 
 /** Shortcuts scoped to the session on screen (see the crew-window guard). */
 const CREW_WINDOW_SCOPED: ReadonlySet<string> = new Set([
@@ -304,6 +305,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'toggle-focus-mode': 'hooks.useKeyboardShortcuts.toggle_focus_mode',
   // Reused: the chat header button this chord fires.
   'pop-out-session': 'pages.chatPage.pop_out_session_to_its_own_window',
+  // Reused: the dialog's own title.
+  'search-all-chats': 'components.globalChatSearch.title',
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
@@ -1038,6 +1041,7 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         // ⌘O / Ctrl+O: the chat header's pop-out button, for the active
         // session. A held chord's auto-repeat is not another press.
         'pop-out-session': () => { if (!e.repeat) onPopOutSession?.() },
+        'search-all-chats': () => { if (!e.repeat) openGlobalChatSearch() },
         // Focus the pending tool-approval row. Firing while typing is safe HERE
         // ONLY BECAUSE IT MOVES FOCUS AND NOTHING ELSE — the decision still costs
         // a second, deliberate press on a control the user can now see is
