@@ -29,7 +29,7 @@ one:
 |---|---|---|
 | 1 | Connect only appears after a preview switch in another tab | Turn the switch on from the card, in one click |
 | 2 | Making the Slack app takes five pages | One **Copy manifest** button that sets all five |
-| 3 | Connect seemed to do nothing; **Re-open approval** was needed | Make the consent link the main button when no tab opened |
+| 3 | Connect opened no tab; **Re-open approval** was needed | Keep the tab open from the click; never close it mid-sign-in; make the approve link the main button when no tab is held |
 | 4 | After **Allow**, the browser says "This site can't be reached" | Know the gateway is remote before Connect; show the paste box at once; use an https return address when the gateway has one |
 | 5 | "Return address" means nothing to people | Plain words: "Copy the whole address from the browser bar and paste it here" |
 | 6 | Card said Connected, first tool call failed | Say Connected only after a real `tools/list`; refresh open chats |
@@ -209,21 +209,42 @@ workspace, and paste this."
 
 ### 3. A consent tab that never stalls
 
-The gateway never opens a browser for this sign-in, so the problem seen
-("Connect did nothing, then **Re-open approval** worked") is the refused-tab
-path, or a tab the person did not see. The fix keeps consent in the person's
-own tab and makes the fallback obvious:
+What the owner saw, in a browser on a Mac (not the desktop app): Connect
+opened nothing, not even a blank tab. **Re-open approval** then opened the
+consent page. That is a lost pop-up. **Re-open approval** is a plain link
+the person clicks, so no pop-up blocker stops it.
 
-- When `clickTab` is `refused`, or the held tab closed before the URL came,
-  the waiting card shows **Open Slack to approve** as its primary button, in
-  the place Connect was. The small **Re-open approval** link stays for the
-  other states.
+The usual cause, `window.open` called after an `await`, is not what main
+does. `startMint` already opens `about:blank` in the click handler, before
+its first `await` (`window.open('', '_blank')`), and sets the tab's
+`location` when the poll brings the URL. So on main the tab is lost in one
+of two ways:
+
+| Way the tab is lost | Where in the code | What the card shows |
+|---|---|---|
+| The browser refuses even the synchronous open (a strict pop-up blocker or setting) | `window.open` returns `null`; `clickTab` becomes `refused` | the small **Re-open approval** link |
+| The card closes the blank tab it opened | the reclaim effect closes a held tab whenever the card is neither busy with `connect` nor `waiting-for-approval`; one render in that gap during the mint closes it | the waiting card, once the state settles, with the link |
+
+Both end where the owner was, and the walk-through cannot tell them apart.
+Phase 1 first reproduces the click in a Mac browser, with the poll timing
+recorded, to name the one that happened. The fix covers both:
+
+- **Keep the synchronous open.** The click handler keeps opening
+  `about:blank` before any `await`, then sets its `location` once the URL
+  arrives. A test pins that order: no `await` and no state update that
+  re-renders comes before `window.open` in `startMint`.
+- **Close the held tab only on an end state.** The reclaim effect closes
+  the blank tab only after Cancel, `failed`, `expired`, a refused mint
+  request or an unmount. A render in the middle of the mint never closes it.
+- **The approve link is the main button whenever no tab is held.** When
+  `clickTab` is `refused`, or the held tab is gone before the URL comes, the
+  waiting card shows **Open Slack to approve** as its primary button, in the
+  place Connect was. That is a plain link, so it works under any blocker.
+  The small **Re-open approval** link stays for the other states.
 - The blank tab's holding text names the provider: "Opening Slack…", not
   "Connecting".
 - A test pins that no sign-in route calls a server-side browser opener.
   `cli_open.open_url` and `webbrowser` stay out of `connections/`.
-- Open question 8 asks the owner what the tab did during the walk-through, in
-  case the cause was something else.
 
 ### 4. Remote gateways: warn first, paste at once, or skip the paste
 
@@ -415,7 +436,7 @@ default-off and changes nothing for a user who never turns it on.
 | Phase | PR | Exit criteria |
 |---|---|---|
 | 0 | Probe, no code: create a Slack app from the section 2 manifest on a throwaway workspace; re-read Google and Asana redirect rules. Verdict written into this RFC. | The RFC states whether Slack accepts `pkce_enabled` and the `localhost` redirect in one manifest, with the date and the error text if not. |
-| 1 | Plain words (section 5) and the primary consent button for a refused tab (section 3). Frontend and locales only. | The waiting card shows the new strings in every locale. A refused tab shows **Open Slack to approve** as the primary button. A test pins no server-side browser opener under `connections/`. |
+| 1 | Plain words (section 5) and the consent tab fixes (section 3): reproduce the lost tab in a Mac browser first, then the reclaim fix and the primary approve link. Frontend and locales only. | The waiting card shows the new strings in every locale. A test pins `window.open` before any `await` in `startMint`. A render during the mint never closes the held tab. A refused or lost tab shows **Open Slack to approve** as the primary button. A test pins no server-side browser opener under `connections/`. |
 | 2 | One-click enable on the card (section 1), and live-session marks when the flag turns on. | With previews on and a bridged backend, one click on the Slack card shows **Connect** with no page change. With previews off or locked, the card shows the link and the reason. |
 | 3 | Copy manifest (section 2): registry fields `app_manifest`, `redirect_urls_extra`; tip button; guide pictures. Blocked on Phase 0 for the redirect line. | The copied text parses as a Slack manifest. It carries the registry's scopes and no bot scopes. The guide's section 1 to 3 shrink to the manifest step plus the manual steps. |
 | 4 | Remote mode (section 4.1, 4.2): the `/reachable` route on the sign-in listener, `gatewayHeadless` in the status answer, the warning and the open paste box. | On a gateway the browser cannot reach, the paste box is open before **Allow**. On a local gateway it is closed. The route answers 204 only while a sign-in is pending. |
@@ -533,9 +554,10 @@ For the repository owner.
    KAS's wording tracked in
    [#38118](https://github.com/kirodotdev/KiroCrew/issues/38118). It is not
    the open-chat gap. No decision is left here; Phase 5 keeps its scope.
-8. **The tab during the walk-through.** Did a blank "Connecting" tab open and
-   stay blank, or did no tab open? Was it a browser or the desktop app? The
-   code shows the gateway never opens a browser here, so the answer decides
-   whether section 3 is the whole fix.
+8. **The tab during the walk-through.** Answered: in a browser on a Mac,
+   Connect opened no tab at all, and **Re-open approval** worked. Section 3
+   now treats it as a lost pop-up. Main already opens the tab before any
+   `await`, so Phase 1 first names which of section 3's two ways lost it,
+   then ships both fixes. No decision is left here.
 9. **Prefilled Slack link.** Slack documents no create link with a manifest
    in it. Keep **Copy manifest** only? Recommendation: yes.
