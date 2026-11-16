@@ -767,10 +767,9 @@ class AgentConfig:
             "Dangerously Skip Permissions",
             "Skip EVERY tool approval confirmation, permanently. Declaring it here "
             "is a standing instruction: the grant does not expire and is "
-            "re-established on every startup. This is the advanced, "
-            "config-file-only escape hatch — there is deliberately no dashboard "
-            "toggle for it. An enterprise policy can forbid it, which falls back "
-            "to the ad-hoc duration below.",
+            "re-established on every startup. Settings -> Advanced shows it with "
+            "a line saying what it risks. An enterprise policy can forbid it, "
+            "which falls back to the ad-hoc duration below.",
             restart=True,
         ),
     )
