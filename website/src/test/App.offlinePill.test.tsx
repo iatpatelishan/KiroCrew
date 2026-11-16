@@ -397,6 +397,48 @@ describe('App in a relay Crew window — a calm reconnecting view while it retri
   })
 })
 
+describe('App on this machine with the gateway gone — one calm view over every panel', () => {
+  beforeEach(() => {
+    isAuthBannerShownMock.mockReset()
+    isAuthBannerShownMock.mockReturnValue(false)
+  })
+
+  it('covers the panels while offline and shows them again once the gateway is back', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    const main = document.getElementById('main-content')!
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(main).not.toHaveAttribute('inert')
+    // The panels show while connected: the gate covers them only offline.
+    expect(screen.getByTestId('chat-page')).toBeVisible()
+    act(() => { store.dispatch(sseDisconnected()) })
+    const view = screen.getByTestId('host-offline')
+    expect(view).toHaveTextContent("isn't running on this machine.")
+    expect(view).toHaveTextContent(en.app.host_offline_reconnects)
+    expect(view).toHaveTextContent(en.app.host_offline_sessions_kept)
+    // No second live region: the top bar's status already speaks the drop,
+    // and its "Gateway offline — reconnecting" stays.
+    expect(view).not.toHaveAttribute('aria-live')
+    expect(statusText(connDot())).toBe(en.app.gateway_offline_reconnecting)
+    expect(screen.getByTestId('topbar-offline-notice')).toHaveTextContent(en.app.gateway_offline_reconnecting)
+    // Every panel under it (folders, board columns, the guide, the composer) is hidden and inert.
+    expect(main).toHaveAttribute('inert')
+    expect(main).toHaveAttribute('aria-hidden', 'true')
+    act(() => { store.dispatch(sseConnected()) })
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(main).not.toHaveAttribute('inert')
+    await shellSettled(queryClient)
+  })
+
+  it('leaves a relay reason to its own surface', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseDisconnected('refused')) })
+    expect(screen.queryByTestId('host-offline')).toBeNull()
+    expect(document.getElementById('main-content')).not.toHaveAttribute('inert')
+    await shellSettled(queryClient)
+  })
+})
+
 describe('App in a relay Crew pane — the desktop app draws the only top bar', () => {
   const PANE_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow kiroCrewRelayPane'
   const WINDOW_UA = 'Mozilla/5.0 (Macintosh) Electron/44 kiroCrewRelayWindow'
