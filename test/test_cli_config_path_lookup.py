@@ -20,13 +20,12 @@ def test_cli_config_follows_the_loader_and_its_undo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     real_base, real_local = loader.config_path(), loader.config_local_path()
-    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "config.json")
-    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "config_path", lambda: tmp_path / "config.json")
+        mp.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
 
-    assert cli_config.config_path() == tmp_path / "config.json"
-    assert cli_config.config_local_path() == tmp_path / "config.local.json"
-
-    monkeypatch.undo()
+        assert cli_config.config_path() == tmp_path / "config.json"
+        assert cli_config.config_local_path() == tmp_path / "config.local.json"
 
     assert cli_config.config_path() == real_base
     assert cli_config.config_local_path() == real_local
