@@ -20,7 +20,7 @@ import os
 import shutil
 import signal
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -278,8 +278,75 @@ async def _handlers_answer(proc: Any, name: str, skipped: list[str]) -> bool:
     return answer is not None
 
 
+#: The ``id`` of a :class:`ToolCallStep` request; the handshake uses 1 to 3.
+_TOOL_CALL_ID = 4
+
+
+class ToolCallStep:
+    """One ``tools/call`` a probe sends after a good ``tools/list``, to the same server.
+
+    *choose* is handed the listed tools and returns the call's ``params``, or ``None``
+    to send none; it runs on the probe's private loop, so it may block. The server's
+    answer lands in :attr:`answer`. The call shares the probe's spawn, sandbox,
+    handshake and teardown, so its server is reaped as a probe's is.
+
+    *timeout* is the seconds the whole run may take, counted from this step's
+    creation; the answer is read against what is left of it, so a tool slower than
+    the handshake timeout still has the run's limit. Without one the answer gets the
+    probe's own timeout.
+    """
+
+    def __init__(
+        self,
+        choose: Callable[[list[Any]], dict[str, Any] | None],
+        timeout: float | None = None,
+    ) -> None:
+        self.choose = choose
+        self.answer: dict[str, Any] | None = None
+        self._deadline = None if timeout is None else time.monotonic() + timeout
+
+    def time_left(self) -> float:
+        """Seconds left to read the answer in."""
+        if self._deadline is None:
+            return _get_probe_timeout()
+        return max(0.0, self._deadline - time.monotonic())
+
+
+async def _call_one_tool(
+    proc: Any, name: str, step: ToolCallStep, tools: list[Any], skipped: list[str]
+) -> bool:
+    """Send *step*'s call when it chooses one; False when the server never answered it."""
+    params = step.choose(tools)
+    if params is None:
+        return True
+    # choose() may block, so a cancel queued meanwhile lands here, before anything is
+    # written; a run whose limit ran out meanwhile reads as the probe's timeout.
+    await asyncio.sleep(0)
+    if step.time_left() <= 0:
+        raise asyncio.TimeoutError
+    call = {"jsonrpc": "2.0", "id": _TOOL_CALL_ID, "method": "tools/call", "params": params}
+    try:
+        proc.stdin.write((json.dumps(call) + "\n").encode())
+        await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        return False  # the server has already closed its end
+    # A request the server sends us meanwhile (it carries a method) is not the answer.
+    for _ in range(_MAX_BANNER_LINES):
+        answer = await _read_stdio_jsonrpc_response(
+            proc.stdout, step.time_left(), name=name, skipped=skipped
+        )
+        if answer is None:
+            return False
+        if answer.get("id") == _TOOL_CALL_ID and "method" not in answer:
+            step.answer = answer
+            return True
+    return False
+
+
 async def _probe_on_private_loop(
-    server: McpServerInfo, client_info: dict[str, str] | None
+    server: McpServerInfo,
+    client_info: dict[str, str] | None,
+    tool_call: ToolCallStep | None = None,
 ) -> McpServerInfo:
     """Run one local probe on a PRIVATE event loop owned by a pooled worker thread.
 
@@ -291,7 +358,9 @@ async def _probe_on_private_loop(
 
     async def _main() -> McpServerInfo:
         handle.append((asyncio.get_running_loop(), asyncio.current_task()))
-        return await probe_server(server, client_info=client_info, _on_private_loop=True)
+        return await probe_server(
+            server, client_info=client_info, tool_call=tool_call, _on_private_loop=True
+        )
 
     def _own_loop() -> McpServerInfo:
         with asyncio.Runner() as runner:
@@ -375,11 +444,15 @@ async def probe_server(
     server: McpServerInfo,
     *,
     client_info: dict[str, str] | None = None,
+    tool_call: ToolCallStep | None = None,
     _on_private_loop: bool = False,
 ) -> McpServerInfo:
     """Probe a single MCP server by spawning it and sending initialize.
 
     Updates server.status and server.tools in place and returns it.
+
+    *tool_call*, for a local server, sends one ``tools/call`` after a good listing
+    (:class:`ToolCallStep`); a server that never answers it reads as a failed probe.
 
     *client_info* overrides the ``clientInfo`` sent in the handshake. The
     shareability pre-flight uses it to ask the same server twice under two
@@ -480,7 +553,7 @@ async def probe_server(
         return server
 
     if not _on_private_loop:
-        return await _probe_on_private_loop(server, client_info)
+        return await _probe_on_private_loop(server, client_info, tool_call)
 
     server.status = "probing"
     # The PATH the spawn will actually search, bound before the try so the
@@ -976,6 +1049,12 @@ async def probe_server(
             server.error = _STOPPED_AFTER_LISTING
             logger.warning("MCP probe failed [%s]: %s", server.name, server.error)
             cache_on_exit = client_info is None
+            return server
+        if tool_call is not None and not await _call_one_tool(
+            proc, server.name, tool_call, tools_data, stdout_skipped
+        ):
+            server.status = "error"
+            server.error = "tools/call: no response"
             return server
         server.tools = [
             name for t in tools_data if isinstance(t, dict) and (name := t.get("name", ""))
