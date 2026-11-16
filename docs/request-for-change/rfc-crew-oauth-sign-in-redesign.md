@@ -130,8 +130,9 @@ How the Slack card behaves on main today:
 
 - No change to custody, the vault, the bridge, the proxy gate or approvals.
   [rfc-crew-owned-oauth.md](rfc-crew-owned-oauth.md) owns those.
-- No root cause for item 6's "The user rejected this tool call". A separate
-  investigation owns it; this RFC links its finding once posted.
+- No fix for item 6's "The user rejected this tool call". Its cause is the
+  approval option id Crew sent KAS, fixed in
+  [#38117](https://github.com/kirodotdev/KiroCrew/pull/38117) (section 6).
 - No new built-in app, and no per-vendor code beyond registry data.
 - No per-person accounts in a shared Crew. The owner's grant stays one grant.
 - No default-on for the preview flag. That stays with the parent RFC's
@@ -335,12 +336,19 @@ are updated in the same PR.
   name under the Connected badge: "Open chats started before this sign-in:
   start a new chat to use Slack there." The list comes from the same marks,
   so it is true, not a guess.
-- **The tool call that came back "rejected".** The separate investigation
-  owns its cause. A likely contributor is visible in the code: the chat was
-  open before the preview switch was turned on, and the card path does not
-  mark live sessions. The design above closes that gap either way. This
-  section links the finding once it is posted, and the rollout adds its fix
-  as its own PR if it is something else.
+- **The tool call that came back "rejected".** The open-chat gap did not
+  cause it. Crew's approval answer did. For a Connection server, Crew turns
+  an "allow always" answer into "allow once" (`once_for_always`, from
+  [#33597](https://github.com/kirodotdev/KiroCrew/pull/33597)). On KAS it
+  answered with the id `allow_once`, which KAS had not offered on that ask.
+  KAS reads an unknown option id as a refusal and reports "The user rejected
+  this tool call." The fix is
+  [#38117](https://github.com/kirodotdev/KiroCrew/pull/38117): answer with an
+  option id KAS offered. KAS's misleading wording for an unknown id is
+  [#38118](https://github.com/kirodotdev/KiroCrew/issues/38118). Neither is
+  part of this RFC. The Connected check and the open-chat refresh above stay:
+  they fix two other gaps, a Connected badge with no working call and an
+  open chat that keeps the old entry.
 
 ### 7. The agent can show the Connect card in chat
 
@@ -520,9 +528,11 @@ For the repository owner.
    (Phase 8), given that it needs the person to add a second redirect?
    Recommendation: build it after Phases 1 to 7, for pods and HTTPS tailnet
    gateways.
-7. **Item 6's cause.** This RFC links the separate investigation's finding
-   when it is posted. If the cause is not the open-chat gap, its fix becomes
-   its own PR ahead of Phase 5.
+7. **Item 6's cause.** Settled: the rejection is the approval option id,
+   fixed by [#38117](https://github.com/kirodotdev/KiroCrew/pull/38117), with
+   KAS's wording tracked in
+   [#38118](https://github.com/kirodotdev/KiroCrew/issues/38118). It is not
+   the open-chat gap. No decision is left here; Phase 5 keeps its scope.
 8. **The tab during the walk-through.** Did a blank "Connecting" tab open and
    stay blank, or did no tab open? Was it a browser or the desktop app? The
    code shows the gateway never opens a browser here, so the answer decides
