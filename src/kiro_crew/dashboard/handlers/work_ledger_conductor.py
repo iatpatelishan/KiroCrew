@@ -87,8 +87,9 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.work_ledger")
 #: ``pr`` into the item's ``acceptance`` and is served by
 #: :func:`work_ledger.apply_acceptance_update`, which is deliberately not a
 #: seventh member of that frozenset (see its docstring). ``ask`` records what an
-#: item needs from the person (:func:`work_ledger.apply_ask_record`).
-RECORD_ACTIONS: frozenset[str] = work_ledger.CONDUCTOR_ACTIONS | {"accept", "ask"}
+#: item needs from the person (:func:`work_ledger.apply_ask_record`). ``retire``
+#: moves a crew-bound item off its crew (:func:`_record_conductor_retire`).
+RECORD_ACTIONS: frozenset[str] = work_ledger.CONDUCTOR_ACTIONS | {"accept", "ask", "retire"}
 
 
 def _count_recorded(action: str, item: Any, header: Any) -> None:
@@ -562,6 +563,9 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         return dirty
     assert unit is not None
 
+    if action == "retire":
+        return await _record_conductor_retire(state, key, cleaned, request)
+
     if action == "bind":
         refusal = _refuse_unowned_worker(request, key, cleaned.get("worker_session_key"))
         if refusal is None:
@@ -594,6 +598,33 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     elif resp.status == 200 and cleaned.get("item_id"):
         await _revoke_closed_remote_trust(state, key, str(cleaned["item_id"]))
     return resp
+
+
+async def _record_conductor_retire(
+    state: DashboardState, key: str, cleaned: dict[str, Any], request: web.Request
+) -> web.Response:
+    """``action=retire``: the caller's own crew-bound item leaves its crew (RFC §5b).
+
+    Refused ``remote_dispatch_disabled`` while the switch is off, as every crew
+    verb is. The write itself is the hub's own retire, with the conductor's reason;
+    a code channel's conductor gets the published fields only, as on every write.
+    """
+    from kiro_crew.dashboard.handlers import remote_dispatch_routes, remote_ingest
+
+    refusal = await remote_dispatch_routes.refuse_if_disabled(key, "work_ledger_record.retire")
+    if refusal is not None:
+        return refusal
+    for name in ("item_id", "reason"):
+        if not cleaned.get(name):
+            return _refuse_400(work_ledger.CODE_INVALID_VALUE, f"retire needs {name}", name)
+    return await remote_ingest.retire_by_conductor(
+        state,
+        key,
+        str(cleaned["item_id"]),
+        str(cleaned["reason"]),
+        code_channel=_code_channel_caller(request),
+        caller_sk=request.headers.get("X-Session-Key", ""),
+    )
 
 
 async def _revoke_closed_remote_trust(state: DashboardState, key: str, item_id: str) -> None:
@@ -1065,8 +1096,9 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
             worker_instance_id=cleaned.get("worker_instance_id"),
         )
     if action == "retire":
-        # Reached only from the hub's own remote ingest (wave 8), never from the
-        # record route: its schema has no ``retire`` action.
+        # Reached only through ``remote_ingest._commit_retire``: the hub's own
+        # ingest (wave 8) and the conductor's ``action=retire``, which the record
+        # route hands there before any write, so the pair always comes from the item.
         return work_ledger.apply_remote_retire(
             key,
             str(cleaned.get("item_id") or ""),
