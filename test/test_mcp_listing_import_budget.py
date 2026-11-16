@@ -70,11 +70,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: the rule table reads headers and encoded credentials in
 #: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
 #: ``.protection`` was one.
+#: Raised by 1 again for all four servers: the git/tar self-target floor is its own owner
+#: module, ``kiro_crew.security.argv_floor_git_tar``, and ``argv_floor`` imports every owner
+#: when ``kiro_crew.security`` loads so that a patch through the facade reaches each holder
+#: of a name. The security package loads before the list, so the owner cannot move behind it.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 488,
-    "mcp-cron": 358,
-    "mcp-guide": 352,
-    "mcp-mate": 353,
+    "mcp-core": 489,
+    "mcp-cron": 359,
+    "mcp-guide": 353,
+    "mcp-mate": 354,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
