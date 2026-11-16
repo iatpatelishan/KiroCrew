@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 #: Approval modes a single session may hold. ``yolo`` is process-wide and has its
 #: own pushed verdict; ``normal`` is the floor and never denied.
 SESSION_TRUST_MODES = ("trust_reads", "trust")
+#: KAS approves calls on its own (``acp.kas_approve_for_me``), so Crew answers none
+#: of them: the policy permits it exactly where it permits ``trust``. It is no rung
+#: of the trust ladder :func:`clamp_session_mode` walks, and no deny hook drops it:
+#: the owner check reads this verdict before each turn and on each call KAS
+#: approves, turning the option off or cancelling the running turn.
+APPROVE_FOR_ME_MODE = "approve_for_me"
 #: Every approval-mode id Crew knows. Anything else is refused, not passed on.
 KNOWN_APPROVAL_MODES = ("normal", "trust_reads", "trust", "yolo")
 
@@ -194,6 +200,8 @@ def session_mode_permitted(mode: str) -> bool:
     """True when policy lets a session hold *mode*. ``normal`` always; unknown never."""
     if mode == "normal":
         return True
+    if mode == APPROVE_FOR_ME_MODE:
+        mode = "trust"
     if mode not in SESSION_TRUST_MODES:
         return False
     if _installing:
@@ -264,7 +272,7 @@ def stored_auto_permitted() -> bool:
 
 def disabled_session_modes() -> list[str]:
     """The session modes the policy forbids, in picker order."""
-    return [m for m in SESSION_TRUST_MODES if not session_mode_permitted(m)]
+    return [m for m in (*SESSION_TRUST_MODES, APPROVE_FOR_ME_MODE) if not session_mode_permitted(m)]
 
 
 def reset_state() -> None:

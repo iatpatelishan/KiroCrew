@@ -1188,6 +1188,16 @@ class LLMProvider(ABC):
         back. Default ``None``: no switch, nothing sent."""
         return None
 
+    def approve_for_me_enabled(self) -> bool | None:
+        """Whether the session's harness approves tool calls on its own ("approve for
+        me"); ``None`` (the default) when the session offers no such option."""
+        return None
+
+    async def set_approve_for_me(self, enabled: bool) -> bool | None:
+        """Turn the session's approve-for-me on or off and return the value read
+        back. Default ``None``: no option, nothing sent."""
+        return None
+
     async def change_effort(self, level: str) -> bool:
         """Change reasoning effort live for the current model. Returns True on success,
         False when effort is unsupported. Default False."""

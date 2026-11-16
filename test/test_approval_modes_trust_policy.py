@@ -209,8 +209,9 @@ def test_a_profile_may_not_deny_trust_only_the_policy_may():
 
 class TestThePickerList:
     def test_the_owner_rule_hides_trust(self):
+        # Approve for me follows Trust: KAS answers those calls, not Crew.
         _install(OWNER_RULE)
-        assert so_mod.cached_disabled_approval_modes() == ["trust", "yolo"]
+        assert so_mod.cached_disabled_approval_modes() == ["trust", "approve_for_me", "yolo"]
 
     def test_all_three_hides_only_yolo(self):
         _install(ALL_THREE)

@@ -1455,6 +1455,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 - `supports_effort()` / `change_effort(level)` / `clear_effort()` → reasoning-effort control (see below)
 - `ultracode_enabled()` / `set_ultracode(enabled)` → the claude harness's per-session ultracode switch; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-ultracode-switch))
 - `fast_mode_enabled()` / `set_fast_mode(enabled)` → the claude harness's per-session Fast mode switch, the same way; `None` on every other session (see [claude-code-provider](claude-code-provider.md#the-fast-mode-switch))
+- `approve_for_me_enabled()` / `set_approve_for_me(enabled)` → a KAS session's `approveForMe` option (KAS approves tool calls on its own), read and written the same way; `None` on every other session. Crew holds it at `on` or `off` (`acp/kas_approve_for_me.py`: at session open and before each turn, `on` only while `dashboard/approve_for_me.py` gives leave), turns the engine switch `KIRO_TRUST_CLASSIFIER_MODE` on for KAS-harness sessions only, writes one SEL row per call marked `trustClassifierApproved`, and cancels a running turn whose leave was withdrawn. The `approval_modes` policy permits it exactly where it permits `trust`
 - `is_alive()` → `AcpClient.is_responsive()` (600s stale threshold)
 - `is_process_alive()` → OS-level process check
 

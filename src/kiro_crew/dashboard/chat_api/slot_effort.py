@@ -1,6 +1,7 @@
 """Reasoning effort: the selection-capabilities read,
 ``POST /api/chat/slots/{slot}/reasoning-effort`` and the on/off switches beside it
-(``POST /api/chat/slots/{slot}/ultracode`` and ``POST /api/chat/slots/{slot}/fast``).
+(``POST /api/chat/slots/{slot}/ultracode``, ``POST /api/chat/slots/{slot}/fast`` and
+``POST /api/chat/slots/{slot}/approve-for-me``).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
         _TEARDOWN_INCOMPLETE_WARNING,
         ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+        APPROVE_FOR_ME_MODE,
         AcpProvider,
         DashboardState,
         KiroCrewConfig,
@@ -25,14 +27,19 @@ if TYPE_CHECKING:
         _app_cancel_denied,
         _append_session_switch_notice,
         _ChatSlot,
+        _deny_approval_mode,
         _remember_reasoning_effort_for_restore,
         _reset_slot_session_or_warn,
         _slot_replaced_while_queued,
         _slot_switch_session_lock,
         _subagents_attached_response,
         _switch_target_busy,
+        apply_approval_mode,
+        approve_for_me_keys,
+        approve_for_me_permitted,
         cap_effort_capability_levels,
         deny_app_slot_access,
+        deny_session_approval_caller,
         effective_session_key,
         get_reasoning_effort_ordered,
         get_reasoning_effort_values,
@@ -43,6 +50,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         relay_archive_refusal,
         resolve_effective_model,
+        sel,
         slot_not_found,
     )
 
@@ -180,6 +188,7 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
         )
     ultracode = provider.ultracode_enabled()
     fast = provider.fast_mode_enabled()
+    approve_for_me = provider.approve_for_me_enabled()
     # Asked only of a switch that reads off: the harness names no blocker for one on.
     fast_unavailable = provider.fast_mode_unavailable() if fast is False else None
     return web.json_response(
@@ -195,6 +204,8 @@ async def api_chat_slot_selection_capabilities(request: web.Request) -> web.Resp
             **({} if fast is None else {"fast": fast}),
             # The harness's own words for why the Fast mode switch would not stay on.
             **({} if fast_unavailable is None else {"fast_unavailable": fast_unavailable}),
+            # Present only while the KAS session offers approve-for-me.
+            **({"approve_for_me": approve_for_me} if isinstance(approve_for_me, bool) else {}),
         }
     )
 
@@ -647,6 +658,112 @@ async def api_chat_slot_fast_mode(request: web.Request) -> web.Response:
     )
 
 
+async def end_approve_for_me(state: DashboardState, slots: list[_ChatSlot]) -> None:
+    """Drop the person's approve-for-me on *slots* after another mode was picked.
+
+    The key leaves the set at once: a busy session's turn is cancelled at the next
+    call KAS approves under it, and the next turn's settle turns the option off;
+    an idle session is also written off now, so the picker reads it back.
+    """
+    keys = approve_for_me_keys(state)
+    for slot in slots:
+        session_key = effective_session_key(slot)
+        keys.discard(session_key)
+        provider = state.sessions.get_provider(session_key) if state.sessions is not None else None
+        if not isinstance(provider, LLMProvider) or not provider.approve_for_me_enabled():
+            continue
+        lease_key = state.sessions._fold_key(session_key)
+        if _switch_target_busy(state, slot, session_key, provider) or not (
+            await state.sessions.try_acquire(lease_key)
+        ):
+            continue
+        try:
+            await provider.set_approve_for_me(False)
+        except Exception as exc:
+            logger.warning(
+                "approve-for-me off failed for slot %s: %s: %s", slot.key, type(exc).__name__, exc
+            )
+        finally:
+            state.sessions.release(lease_key, wake_queue=True)
+
+
+async def api_chat_slot_approve_for_me(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/approve-for-me — let KAS approve calls on its own.
+
+    Body: ``{"enabled": true | false}``; answers ``{"ok": true, "approve_for_me":
+    <read-back>}``. Dashboard owner only: an app, a cron or another internal caller
+    is refused. Turning it on is checked against the ``approval_modes`` policy and
+    first puts the slot back to Normal (ending its Trust, Reads or YOLO), since
+    Crew would otherwise answer the calls itself. The other refusals are
+    :func:`_write_session_switch`'s, with the ``approve_for_me_`` codes.
+    """
+    state: DashboardState = request.app["state"]
+    denied = await deny_session_approval_caller(request, "slot_approve_for_me")
+    if denied is not None:
+        return denied
+    if request.get("app") or request.get("internal_auth") is True:
+        return web.json_response(
+            {
+                "error": "approve for me is set from the dashboard only",
+                "code": "approve_for_me_owner_only",
+            },
+            status=403,
+        )
+    mode = APPROVE_FOR_ME_MODE
+
+    async def _before(slot: _ChatSlot, session_key: str, enabled: bool) -> web.Response | None:
+        if not enabled:
+            approve_for_me_keys(state).discard(session_key)
+            return None
+        if not approve_for_me_permitted():
+            return _deny_approval_mode(
+                caller="dashboard:approve_for_me",
+                operation=f"mode_change:{mode}",
+                mode=mode,
+                resource=slot.key,
+            )
+        answer = await apply_approval_mode(
+            state,
+            mode="normal",
+            slot=slot,
+            slot_key=slot.key,
+            request_app="",
+            cron_creator="",
+            audit_caller=lambda label: label,
+        )
+        if answer.status != 200:
+            return answer
+        return None
+
+    def _after(slot: _ChatSlot, session_key: str, value: bool | None) -> None:
+        # Only a write that read back on gives leave. Nothing awaits between the
+        # lease release and this, so no prompt can settle in between.
+        if value is True:
+            approve_for_me_keys(state).add(session_key)
+        else:
+            approve_for_me_keys(state).discard(session_key)
+        try:
+            sel().log_api_access(
+                caller="dashboard:approve_for_me",
+                operation=f"mode_change:{mode}",
+                outcome="enabled" if value is True else "disabled",
+                resources=slot.key,
+            )
+        except Exception:
+            logger.warning("SEL audit failed for approve-for-me change", exc_info=True)
+        state.push_slots_update()
+
+    return await _write_session_switch(
+        request,
+        "approve_for_me",
+        "approve-for-me",
+        read=lambda provider: provider.approve_for_me_enabled(),
+        write=lambda provider, enabled: provider.set_approve_for_me(enabled),
+        before_write=_before,
+        after_write=_after,
+    )
+
+
 async def _write_session_switch(
     request: web.Request,
     key: str,
@@ -654,6 +771,8 @@ async def _write_session_switch(
     *,
     read: Callable[[LLMProvider], bool | None],
     write: Callable[[LLMProvider, bool], Awaitable[bool | None]],
+    before_write: Callable[[_ChatSlot, str, bool], Awaitable[web.Response | None]] | None = None,
+    after_write: Callable[[_ChatSlot, str, bool | None], None] | None = None,
 ) -> web.Response:
     """Write one of the session's on/off switches and answer the value it reads back.
 
@@ -665,6 +784,10 @@ async def _write_session_switch(
     harness's output beside the streaming turn, the hazard the effort route defers
     its live push for. A write the adapter rejects answers 502 ``<key>_refused``.
     Nothing is persisted here: the switch is the adapter's own per-session state.
+
+    *before_write* runs under the session's turn lease, after the offer and busy
+    checks, with the slot, its session key and the requested value; a response it returns is answered instead
+    and nothing is written. *after_write* gets the value read back after a write.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -716,6 +839,11 @@ async def _write_session_switch(
                 {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
             )
         try:
+            # Under the lease, so a busy session is refused before anything changes.
+            if before_write is not None:
+                refused = await before_write(slot, session_key, enabled)
+                if refused is not None:
+                    return refused
             value = await write(provider, enabled)
         except Exception as exc:
             logger.warning(
@@ -729,5 +857,7 @@ async def _write_session_switch(
             return web.json_response({"error": str(exc), "code": f"{key}_refused"}, status=502)
         finally:
             state.sessions.release(lease_key, wake_queue=True)
+        if after_write is not None:
+            after_write(slot, session_key, value)
     logger.info("Slot %s %s switched to %s", name, key, value)
     return web.json_response({"ok": True, key: value})

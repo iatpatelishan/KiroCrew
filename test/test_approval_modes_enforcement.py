@@ -302,8 +302,9 @@ class TestTheVerdictIsResolvedAtCeilingInstall:
 
         assert so.yolo_policy_permits() is False
         # The trust modes are read from the installed ceiling's rule alone (no
-        # governance read), so they follow that rule: `trust` denied, `trust_reads` not.
-        assert so.cached_disabled_approval_modes() == ["trust", "yolo"], (
+        # governance read), so they follow that rule: `trust` denied, `trust_reads` not,
+        # and approve-for-me with `trust`.
+        assert so.cached_disabled_approval_modes() == ["trust", "approve_for_me", "yolo"], (
             "reporting nothing-denied on a resolve error would unhide a mode the "
             "gate is refusing"
         )

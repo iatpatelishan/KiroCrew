@@ -22,6 +22,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import kas_approve_for_me
 from kiro_crew.acp._dispatch import redact_text
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -39,6 +40,7 @@ from kiro_crew.acp.session_handle import (
     EntitlementRevalidating,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKENDS_APPROVE_FOR_ME,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -426,6 +428,30 @@ async def set_fast_mode(self: AcpProvider, enabled: bool) -> bool | None:
         return None
     await self._client.set_config_option(FAST_MODE_CONFIG_OPTION_ID, "on" if enabled else "off")
     return self.fast_mode_enabled()
+
+
+def approve_for_me_enabled(self: AcpProvider) -> bool | None:
+    """Whether the KAS session's approve-for-me reads on; ``None`` when it offers none.
+
+    Crew holds the option at ``on`` or ``off`` (``acp.kas_approve_for_me.settle``),
+    so any value but ``on`` reads as off.
+    """
+    return _switch_state(
+        self._client, ACP_BACKENDS_APPROVE_FOR_ME, kas_approve_for_me.APPROVE_FOR_ME_CONFIG_ID
+    )
+
+
+async def set_approve_for_me(self: AcpProvider, enabled: bool) -> bool | None:
+    """Write the session's approve-for-me and return what it reads back.
+
+    ``None``, with nothing sent, when the session offers no such option.
+    """
+    if self.approve_for_me_enabled() is None:
+        return None
+    await self._client.set_config_option(
+        kas_approve_for_me.APPROVE_FOR_ME_CONFIG_ID, "on" if enabled else "off"
+    )
+    return self.approve_for_me_enabled()
 
 
 def _resolve_effort(self: AcpProvider) -> str | None:

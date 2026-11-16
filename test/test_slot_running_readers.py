@@ -171,6 +171,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_effort.py", "api_chat_slot_reasoning_effort"),
                 # The ultracode and Fast mode routes' shared writer.
                 ("chat_api/slot_effort.py", "_write_session_switch"),
+                # Ending approve-for-me after another mode is picked writes only an
+                # idle session; a busy one is left to its next turn's settle.
+                ("chat_api/slot_effort.py", "end_approve_for_me"),
                 # Reload refuses a reserved slot or sibling alias through
                 # _switch_target_busy, as the session_reload verb does.
                 ("chat_api/session_relaunch.py", "api_chat_slot_reload"),

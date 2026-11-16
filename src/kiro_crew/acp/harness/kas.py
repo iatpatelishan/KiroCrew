@@ -39,6 +39,7 @@ from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
+from kiro_crew.acp import kas_approve_for_me
 from kiro_crew.acp import kas_route as kas_route_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -1122,6 +1123,9 @@ class KasHarness(MembershipHarness):
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        # Set before the operator defaults so neither they nor an inherited value
+        # decide it: Crew sets each session's approve-for-me value itself.
+        kas_approve_for_me.enable(env)
         apply_child_env_defaults(env)
         env.setdefault("KIRO_DISABLE_SESSION_TITLE_LLM", "true")
         apply_node_compile_cache(env, engine_bundle=engine_bundle)

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         deny_app_session_control,
         deny_non_dashboard_caller,
         effective_session_key,
+        end_approve_for_me,
         exact_trust_pattern,
         grant_deadline,
         logger,
@@ -435,7 +436,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
 
-    return await apply_approval_mode(
+    answer = await apply_approval_mode(
         state,
         mode=mode,
         slot=slot,
@@ -444,6 +445,13 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         cron_creator=cron_creator,
         audit_caller=audit_caller,
     )
+    if answer.status == 200:
+        # Any other mode picked ends approve-for-me on the slots it names
+        # (every slot for YOLO or an unnamed request).
+        await end_approve_for_me(
+            state, [slot] if slot is not None and mode != "yolo" else list(state._slots.values())
+        )
+    return answer
 
 
 async def apply_approval_mode(

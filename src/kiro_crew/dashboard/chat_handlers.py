@@ -63,6 +63,11 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
 )
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
+from kiro_crew.dashboard.approve_for_me import (  # noqa: F401 -- read by chat_api.slot_effort
+    APPROVE_FOR_ME_MODE,
+    approve_for_me_keys,
+    approve_for_me_permitted,
+)
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
@@ -312,11 +317,13 @@ from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
     _own_models_field,
     _write_session_switch,
+    api_chat_slot_approve_for_me,
     api_chat_slot_fast_mode,
     api_chat_slot_reasoning_effort,
     api_chat_slot_selection_capabilities,
     api_chat_slot_ultracode,
     configured_backend_for_session,
+    end_approve_for_me,
 )
 from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
