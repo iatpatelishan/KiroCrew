@@ -8,6 +8,7 @@ import type { ComponentType } from 'react'
 import { Navigate, useLocation, useParams } from 'react-router-dom'
 import { lazyRetry } from '../components/lazyRetry'
 import { i18nT } from '../i18n/t'
+import { shareTargetChatQuery } from '../utils/shareTarget'
 
 /**
  * A route page loaded on first navigation, rendering nothing until its chunk
@@ -52,3 +53,5 @@ export function McpRedirect() {
 export function TasksRedirect() { const { search } = useLocation(); return <Navigate to={'/projects' + search} replace /> }
 export function ChatRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + search} replace /> }
 export function OrchestratedRedirect() { const { slug } = useParams(); const { search } = useLocation(); return <Navigate to={`/chat${slug ? '/' + slug : ''}${search}`} replace /> }
+/** `/share`: the installed app's share target. A share from another app opens a new chat with the shared text in its composer, unsent. */
+export function ShareTargetRedirect() { const { search } = useLocation(); return <Navigate to={'/chat' + shareTargetChatQuery(search)} replace /> }

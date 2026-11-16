@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from '../shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect, ShareTargetRedirect } from '../shell/routes'
 
 function Where() {
   const { pathname, search } = useLocation()
@@ -52,6 +52,14 @@ describe('shell route redirects', () => {
 
   it('an unmatched path lands on /chat with its query', async () => {
     expect(await at('/nowhere?sid=a', '/nowhere', <ChatRedirect />)).toHaveTextContent(/^\/chat\?sid=a$/)
+  })
+
+  it('/share opens a new chat with the shared text prefilled', async () => {
+    expect(await at('/share?text=hi%20there', '/share', <ShareTargetRedirect />)).toHaveTextContent(/^\/chat\?new=1&prefill=hi\+there$/)
+  })
+
+  it('/share with nothing shared opens an empty new chat', async () => {
+    expect(await at('/share', '/share', <ShareTargetRedirect />)).toHaveTextContent(/^\/chat\?new=1$/)
   })
 
   it('/orchestrated keeps its slug and query, and drops the segment without one', async () => {
