@@ -1,0 +1,307 @@
+"""A config file with a JSON syntax error is named at start, with its line and a fix.
+
+Contract under test:
+- ``find_config_syntax_errors`` names each of ``config.json`` and
+  ``config.local.json`` that does not parse, with the parser's line and column,
+  the offending line and one fix: a missing comma names the line it belongs at
+  the end of, a trailing comma the line it must leave;
+- a file that parses, is absent, or cannot be decoded reports nothing;
+- the report leaves the broken file byte-identical;
+- ``config_syntax_note.publish`` prints each error to stderr, keeps one critical
+  ``system.agent`` bell note naming the file and the line, publishes nothing new
+  for the same errors, and removes the note once the files parse.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from kiro_crew.config import syntax_report
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    KiroCrewConfig,
+    config_path,
+    update_config_locked,
+)
+from kiro_crew.dashboard.state_parts.notification_log import (
+    _load_notifications,
+    _persist_notification,
+)
+from kiro_crew.notifications import config_syntax_note as note_mod
+from kiro_crew.notifications.bus import NotificationBus
+from kiro_crew.testing.synthetic_credentials import SAMPLE_SLACK_BOT_TOKEN
+
+MISSING_COMMA = (
+    '{\n  "dashboard": {\n    "theme": "dark"\n    "url": "http://127.0.0.1:5476"\n  }\n}\n'
+)
+TRAILING_COMMA = '{\n  "dashboard": {\n    "theme": "dark",\n  }\n}\n'
+
+
+@pytest.fixture
+def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    base = tmp_path / "config.json"
+    local = tmp_path / "config.local.json"
+    monkeypatch.setattr(syntax_report, "config_path", lambda: base)
+    monkeypatch.setattr(syntax_report, "config_local_path", lambda: local)
+    return base, local
+
+
+def test_a_missing_comma_names_the_file_the_line_and_where_the_comma_goes(
+    files: tuple[Path, Path],
+) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+
+    (err,) = syntax_report.find_config_syntax_errors()
+
+    assert err.path == base
+    assert (err.line, err.column) == (4, 5)
+    assert err.message == "Expecting ',' delimiter"
+    assert err.excerpt == '"url": "http://127.0.0.1:5476"'
+    assert err.fix == "add a comma at the end of line 3"
+    text = err.explain()
+    assert str(base) in text
+    assert "line 4, column 5" in text
+    assert "add a comma at the end of line 3" in text
+    assert "it will not save over the file until it parses again" in text
+    assert err.backup is None
+    assert "earlier copy" not in text
+
+
+def test_a_backup_beside_the_file_is_named(files: tuple[Path, Path]) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+    backup = Path(str(base) + ".bak")
+    backup.write_text("{}", encoding="utf-8")
+
+    (err,) = syntax_report.find_config_syntax_errors()
+
+    assert err.backup == backup
+    assert f"An earlier copy from a settings migration is at {backup}" in err.explain()
+
+
+def test_a_credential_on_the_offending_line_is_masked(files: tuple[Path, Path]) -> None:
+    base, _local = files
+    base.write_text(
+        '{\n  "a": 1\n  "slack": {"bot_token": "' + SAMPLE_SLACK_BOT_TOKEN + '"}\n}\n',
+        encoding="utf-8",
+    )
+
+    (err,) = syntax_report.find_config_syntax_errors()
+
+    assert err.line == 3
+    assert '"slack"' in err.excerpt
+    assert SAMPLE_SLACK_BOT_TOKEN not in err.excerpt
+    assert SAMPLE_SLACK_BOT_TOKEN not in err.explain()
+
+
+def test_a_trailing_comma_names_the_line_it_must_leave(files: tuple[Path, Path]) -> None:
+    base, _local = files
+    base.write_text(TRAILING_COMMA, encoding="utf-8")
+
+    (err,) = syntax_report.find_config_syntax_errors()
+
+    assert err.fix == "remove the comma at the end of line 3"
+
+
+def test_the_overlay_is_reported_after_the_base(files: tuple[Path, Path]) -> None:
+    base, local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+    local.write_text("{", encoding="utf-8")
+
+    errors = syntax_report.find_config_syntax_errors()
+
+    assert [e.path for e in errors] == [base, local]
+    assert errors[1].fix == "correct the JSON on line 1 at column 2"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param(b'{"dashboard": {"theme": "dark"}}', id="valid"),
+        pytest.param(b"\xef\xbb\xbf{}", id="valid-with-bom"),
+        pytest.param(b"\xff\xfe{", id="not-utf8"),
+    ],
+)
+def test_reports_nothing(files: tuple[Path, Path], content: bytes | None) -> None:
+    base, _local = files
+    if content is not None:
+        base.write_bytes(content)
+
+    assert syntax_report.find_config_syntax_errors() == []
+
+
+def test_the_broken_file_is_left_as_it_was(files: tuple[Path, Path]) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+
+    syntax_report.find_config_syntax_errors()
+
+    assert base.read_text(encoding="utf-8") == MISSING_COMMA
+    assert sorted(p.name for p in base.parent.iterdir()) == ["config.json"]
+
+
+def test_no_config_writer_saves_over_the_broken_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What the report promises: a degraded load followed by a settings save (the
+    # theme change of the onboarding story) leaves the broken bytes, and no backup.
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    path = config_path()
+    assert path.parent == tmp_path
+    path.write_text(MISSING_COMMA, encoding="utf-8")
+
+    cfg = KiroCrewConfig.load()
+    cfg.dashboard.theme_mode = "light"
+    with pytest.raises(ConfigReadError):
+        cfg.save()
+    with pytest.raises(ConfigReadError):
+        update_config_locked(path, mutate=lambda doc: {**doc, "x": 1})
+
+    assert path.read_text(encoding="utf-8") == MISSING_COMMA
+    assert not Path(str(path) + ".bak").exists()
+    (err,) = syntax_report.find_config_syntax_errors()
+    assert err.path == path
+
+
+def test_a_long_line_is_cut_in_the_excerpt(files: tuple[Path, Path]) -> None:
+    base, _local = files
+    base.write_text('{"a": "' + "x" * 500 + '" "b": 1}', encoding="utf-8")
+
+    (err,) = syntax_report.find_config_syntax_errors()
+
+    assert len(err.excerpt) == syntax_report._EXCERPT_CHARS + 3
+    assert err.excerpt.endswith("...")
+
+
+# ── the start report ──
+
+
+class _State:
+    """What the note publisher reads off the dashboard state."""
+
+    def __init__(self) -> None:
+        self._notification_log: list[dict] = []
+        self.notification_bus = NotificationBus(sink=self._deliver)
+        self.last_notification_persist: asyncio.Future[bool] | None = None
+        self.dismissed = 0
+
+    def _deliver(self, note: dict) -> None:
+        self._notification_log.append(note)
+        done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        done.set_result(True)
+        self.last_notification_persist = done
+
+    async def dismiss_notification(self, *, source: str, key: str) -> tuple[bool, bool]:
+        self.dismissed += 1
+        held = [
+            n for n in self._notification_log if n.get("source") == source and n.get("key") == key
+        ]
+        self._notification_log[:] = [n for n in self._notification_log if n not in held]
+        return bool(held), True
+
+
+@pytest.mark.asyncio
+async def test_a_start_prints_the_error_and_rings_the_bell_once(
+    files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+    state = _State()
+
+    assert await note_mod.publish(state) is True
+
+    err_out = capsys.readouterr().err
+    assert str(base) in err_out
+    assert "add a comma at the end of line 3" in err_out
+    (note,) = state._notification_log
+    assert note["channel"] == "system.agent"
+    assert note["priority"] == "critical"
+    assert note["key"] == note_mod.KEY
+    assert note["title"] == "config.json has a syntax error and is ignored"
+    assert str(base) in note["body"]
+    assert "line 4, column 5" in note["body"]
+
+    # A restart with the same error prints again but rings nothing new.
+    assert await note_mod.publish(state) is False
+    assert str(base) in capsys.readouterr().err
+    assert len(state._notification_log) == 1
+
+
+class _StoredState(_State):
+    """A state whose notes go through the real notification store and reload from it."""
+
+    def _deliver(self, note: dict) -> None:
+        super()._deliver(note)
+        assert _persist_notification(note)
+
+    @classmethod
+    def restarted(cls) -> "_StoredState":
+        state = cls()
+        state._notification_log = _load_notifications()
+        return state
+
+
+@pytest.mark.asyncio
+async def test_a_restart_reads_the_stored_note_and_rings_nothing_new(
+    files: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+    assert await note_mod.publish(_StoredState()) is True
+
+    restarted = _StoredState.restarted()
+    (stored,) = restarted._notification_log
+    assert stored["key"] == note_mod.KEY
+
+    assert await note_mod.publish(restarted) is False
+    assert len(restarted._notification_log) == 1
+    assert restarted.dismissed == 0
+
+
+@pytest.mark.asyncio
+async def test_a_different_error_replaces_the_note_and_a_fix_removes_it(
+    files: tuple[Path, Path],
+) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+    state = _State()
+    assert await note_mod.publish(state) is True
+
+    base.write_text(TRAILING_COMMA, encoding="utf-8")
+    assert await note_mod.publish(state) is True
+    (note,) = state._notification_log
+    assert "remove the comma at the end of line 3" in note["body"]
+
+    base.write_text("{}", encoding="utf-8")
+    assert await note_mod.publish(state) is False
+    assert state._notification_log == []
+
+
+@pytest.mark.asyncio
+async def test_without_a_dashboard_the_error_is_still_printed(
+    files: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _local = files
+    base.write_text(MISSING_COMMA, encoding="utf-8")
+
+    assert await note_mod.publish(None) is False
+
+    assert "line 4, column 5" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_clean_start_with_no_note_touches_nothing(files: tuple[Path, Path]) -> None:
+    state = _State()
+
+    assert await note_mod.publish(state) is False
+
+    assert state._notification_log == []
+    assert state.dismissed == 0
