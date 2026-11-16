@@ -2259,6 +2259,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
   },
   {
+    "id": "developer.app-tools-in-bot-chats",
+    "label": "App tools in bot chats",
+    "labelKey": "pages.developer.featurePreviewsTab.bot_chat_app_tools",
+    "description": "Lets a bot you tick on an app's page read and reply through that app from its own chat. The bot still asks before each action, as you set it up.",
+    "hint": "An app that offers tools for bot chats, and whose bot tools permission you approved, adds them to the chat of each bot you tick on the app's page. Untick the bot or turn the app off, and that chat starts a fresh conversation without them on its next turn. Turned off, bot chats keep only the built-in tools.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.artifact-deploy",
     "label": "Artifact Deploy",
     "labelKey": "pages.developer.featurePreviewsTab.artifact_deploy",

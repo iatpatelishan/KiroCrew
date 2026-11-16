@@ -55,7 +55,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKENDS_CREW_OAUTH_BRIDGE
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
@@ -804,6 +804,17 @@ async def _mirrored_session_mcp(
         runtime_pid=_own_root_pid,
         owner=self,
     )
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    if active_agent == MATE_CONDUCTOR_AGENT and session_key:
+        # A Bot's own chat: settle its app-server record from the array this session
+        # is handed, as the AcpClient path does (``bot_chat_app_tools.record_mounted``).
+        from kiro_crew.bot_chat_app_tools import mounted_names, record_mounted
+        from kiro_crew.providers.mirrors.codex import codex_name
+
+        # codex registers each server under its whitespace-folded name.
+        spelled = codex_name if self.acp_backend == ACP_BACKEND_CODEX else str
+        await asyncio.to_thread(record_mounted, session_key, mounted_names(servers), spelled)
     return _MirroredSessionMcp(
         servers=servers,
         denied_tools=projection.denied_tools,
