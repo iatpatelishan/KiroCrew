@@ -626,6 +626,8 @@ def test_cli_a_bad_port_exits_with_the_usual_message(
         ({"SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22"}, False, True),
         # A Session Manager shell sets no SSH variable and has no display.
         ({}, True, True),
+        # A remote session with a display set still opens a browser.
+        ({"DISPLAY": ":0"}, True, False),
     ],
 )
 def test_cli_opens_a_browser_only_where_the_gateway_would(

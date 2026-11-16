@@ -74,6 +74,20 @@ def test_no_session_manager_ancestor_is_not_ssm(monkeypatch: pytest.MonkeyPatch)
     assert shell_origin.is_ssm_session() is False
 
 
+def test_a_cyclic_process_table_stops_at_the_depth_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    _process_table(monkeypatch, {500: ("python3", 400), 400: ("bash", 500)})
+    walked: list[int] = []
+    read_name = platform_compat.linux_process_name
+
+    def counted(pid: int) -> str | None:
+        walked.append(pid)
+        return read_name(pid)
+
+    monkeypatch.setattr(platform_compat, "linux_process_name", counted)
+    assert shell_origin.is_ssm_session() is False
+    assert len(walked) == shell_origin.SSM_ANCESTRY_MAX_DEPTH
+
+
 def test_an_unreadable_process_table_is_not_ssm(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(_pid: int) -> str:
         raise OSError("no /proc")
