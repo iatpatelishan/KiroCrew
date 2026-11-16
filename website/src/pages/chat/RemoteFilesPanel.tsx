@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { ChevronDown, ChevronRight, Cloud, FileText, Folder, RefreshCw, Save, TerminalSquare } from 'lucide-react'
+import { ChevronDown, ChevronRight, Circle, Cloud, FileText, Folder, RefreshCw, Save, TerminalSquare } from 'lucide-react'
 import { api, type RemoteFileContent } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -413,7 +413,7 @@ function RemoteDir({ slot, workdir, path, depth, selected, dirtyPaths, onSelect 
               {entry.dir
                 ? <Folder className="lucide-inline shrink-0 text-muted" aria-hidden />
                 : <FileText className="lucide-inline shrink-0 text-muted" aria-hidden />}
-              <span className="truncate">{entry.name}{dirtyPaths[child] && dirtyPaths[child].content !== dirtyPaths[child].expected ? ' •' : ''}</span>
+              <span className="truncate">{entry.name}{dirtyPaths[child] && dirtyPaths[child].content !== dirtyPaths[child].expected ? <> <Circle className="lucide-inline scale-50" fill="currentColor" strokeWidth={0} /></> : ''}</span>
             </Btn>
             {entry.dir && expanded && (
               <RemoteDir slot={slot} workdir={workdir} path={child} depth={depth + 1} selected={selected} dirtyPaths={dirtyPaths} onSelect={onSelect} />
