@@ -165,8 +165,10 @@ from kiro_crew.dashboard.messaging_api.imessage_settings import (  # noqa: F401
     api_imessage_config_get,
 )
 from kiro_crew.dashboard.messaging_api.notifications import (  # noqa: F401
+    _audit_withheld,
     _is_app_note,
     _refuse_hidden_note,
+    _withheld_from,
     api_notification_ack,
     api_notification_channel_settings,
     api_notification_channels,

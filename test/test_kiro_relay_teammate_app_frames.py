@@ -49,6 +49,12 @@ _APP_FRAMES = [
     pytest.param("notification", {"source": "app:mochi", "body": "private"}, id="notification"),
     pytest.param("notification_channel_settings", {"channel": "mochi.reminders"}, id="channel"),
 ]
+#: A note naming the Team Crews the owner's own sign-in can open.
+_RELAY_NOTE = {
+    "source": "system",
+    "channel": "system.relay",
+    "title": "You've been added to Build box",
+}
 #: The Crew's own frames, which a teammate keeps.
 _CREW_FRAMES = [
     pytest.param("notification", {"source": "system", "body": "done"}, id="notification"),
@@ -239,6 +245,36 @@ async def test_the_notification_list_withholds_app_pushes_from_a_teammate(tmp_pa
         assert sources == ["system", "system"]
         assert body["unread"] == 1
         assert withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("who", ["owner", "teammate"])
+async def test_the_notification_list_withholds_the_owners_team_crew_notes(tmp_path, who):
+    state = _make_state(tmp_path)
+    state._notification_log = [
+        {"ts": "1", "source": "system", "channel": "system.agent", "body": "done", "acked": False},
+        {
+            "ts": "2",
+            "source": "system",
+            "channel": "system.relay",
+            "body": "Build box",
+            "acked": False,
+        },
+    ]
+    ingress = _personal() if who == "owner" else _team()
+    user = OWNER if who == "owner" else TEAMMATE
+    async with TestClient(TestServer(_relay_app(state, ingress))) as client:
+        resp = await client.get(
+            "/api/notifications", headers=ingress.stamp_headers([], relay_user=user)
+        )
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    channels = [note["channel"] for note in body["notifications"]]
+    if who == "owner":
+        assert channels == ["system.agent", "system.relay"]
+    else:
+        assert channels == ["system.agent"]
+        assert body["unread"] == 1
 
 
 class _Channels:
@@ -498,6 +534,113 @@ async def test_the_sse_stream_withholds_app_pushes_from_a_teammate(tmp_path, mon
         stopped.set()
     assert not [block for block in blocks if b"private" in block]
     assert withheld == ["notification"]
+
+
+@pytest.fixture
+def owner_only_withheld(monkeypatch) -> list[str]:
+    """The event types a non-owner was withheld as owner-only, as their SEL rows record them."""
+    from kiro_crew.dashboard import ws_event_scope
+
+    rows: list[str] = []
+
+    def record(app: str, event_type: str, reason: str) -> None:
+        if reason == ws_event_scope.OWNER_ONLY_NOTE:
+            rows.append(event_type)
+
+    monkeypatch.setattr(ws_event_scope, "_audit_deny", record)
+    return rows
+
+
+def test_a_team_crew_note_reaches_only_the_owners_socket(
+    tmp_path, monkeypatch, owner_only_withheld
+):
+    state = _make_state(tmp_path)
+    teammate, owner = _WS(relay_teammate=True), _WS(relay_teammate=False)
+    other = _WS(relay_teammate=False)  # a non-owner dashboard session, not relayed
+    state.register_ws(teammate, owner=False)
+    state.register_ws(other, owner=False)
+    state.register_ws(owner, owner=True)
+    sent: list = []
+    monkeypatch.setattr(state, "_spawn_ws_send", lambda ws, _payload: sent.append(ws))
+    state._send_ws_all("notification", dict(_RELAY_NOTE), "{}")
+    assert owner in sent
+    assert teammate not in sent and other not in sent
+    assert owner_only_withheld == ["notification", "notification"]
+
+
+@pytest.mark.asyncio
+async def test_the_sse_stream_withholds_team_crew_notes_from_a_teammate(
+    tmp_path, monkeypatch, withheld
+):
+    from kiro_crew.dashboard.handlers import updates
+
+    stopped = asyncio.Event()
+    monkeypatch.setattr(updates, "shutdown_event", stopped)
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    ingress = _team()
+    app = _relay_app(state, ingress)
+    app.router.add_get("/api/stream", updates.api_stream)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/stream", headers=ingress.stamp_headers([], relay_user=TEAMMATE)
+            )
+            assert resp.status == 200
+            first = await finished(resp.content.readuntil(b"\n\n"), "the first SSE frame")
+            assert first.startswith(b"event: dashboard")
+            state._broadcast(dict(_RELAY_NOTE))
+            state._broadcast({"source": "system", "body": "fence"})
+            blocks: list[bytes] = []
+            while b"fence" not in (blocks[-1] if blocks else b""):
+                blocks.append(await finished(resp.content.readuntil(b"\n\n"), "an SSE frame"))
+            resp.close()
+    finally:
+        stopped.set()
+    assert not [block for block in blocks if b"Build box" in block]
+    assert withheld == ["notification"]
+
+
+@pytest.mark.asyncio
+async def test_the_sse_stream_keeps_team_crew_notes_for_the_owner(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.handlers import updates
+
+    stopped = asyncio.Event()
+    monkeypatch.setattr(updates, "shutdown_event", stopped)
+    state = _make_state(tmp_path)
+    monkeypatch.setattr(state, "status_snapshot", lambda **_kwargs: {})
+    ingress = _personal()
+    app = _relay_app(state, ingress)
+    app.router.add_get("/api/stream", updates.api_stream)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get(
+                "/api/stream", headers=ingress.stamp_headers([], relay_user=OWNER)
+            )
+            assert resp.status == 200
+            await finished(resp.content.readuntil(b"\n\n"), "the first SSE frame")
+            state._broadcast(dict(_RELAY_NOTE))
+            frame = await finished(resp.content.readuntil(b"\n\n"), "an SSE frame")
+            resp.close()
+    finally:
+        stopped.set()
+    assert b"Build box" in frame
+
+
+@pytest.mark.asyncio
+async def test_a_teammate_cannot_change_a_team_crew_note_by_name(tmp_path, monkeypatch):
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _SelRecorder())
+    state, _ = _feed_state(tmp_path, monkeypatch)
+    state._notification_log = [{"ts": "9", "acked": False, **_RELAY_NOTE}]
+    ingress = _team()
+    async with TestClient(TestServer(_feed_app(state, ingress))) as client:
+        resp = await client.post(
+            "/api/notifications/ack",
+            json={"ts": "9"},
+            headers=ingress.stamp_headers([], relay_user=TEAMMATE),
+        )
+    assert resp.status == 403
+    assert state._notification_log[0]["acked"] is False
 
 
 @pytest.mark.asyncio

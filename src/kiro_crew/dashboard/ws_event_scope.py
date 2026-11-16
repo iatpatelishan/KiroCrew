@@ -412,18 +412,51 @@ def is_app_channel(channel: str) -> bool:
     return bool(owner) and owner != _SYSTEM_SOURCE
 
 
+#: System channels whose notes describe the owner's own accounts, not this Crew:
+#: ``system.relay`` names the Team Crews the owner's sign-in can open
+#: (``relay_viewer/crew_notices.py``). Only the dashboard owner receives them, on
+#: every transport; any other caller (a relayed teammate, a non-owner dashboard
+#: session, an app token) is withheld them.
+OWNER_ONLY_CHANNELS = frozenset({"system.relay"})
+
+
+def owner_only_note(note: object) -> bool:
+    """Whether *note* is on an owner-only channel (``OWNER_ONLY_CHANNELS``)."""
+    fields = note if isinstance(note, dict) else {}
+    return str(fields.get("channel", "")) in OWNER_ONLY_CHANNELS
+
+
+def teammate_withheld_note(note: object) -> bool:
+    """Whether a relayed teammate is withheld *note*: an app's push or an owner-only channel."""
+    fields = note if isinstance(note, dict) else {}
+    return bool(notification_source_app(str(fields.get("source", "")))) or owner_only_note(fields)
+
+
+#: Why a non-owner was withheld an owner-only note, on any transport.
+OWNER_ONLY_NOTE = "owner_only_note"
+
+
+def audit_owner_only_withheld(event_type: str) -> None:
+    """Record, best-effort, that a non-owner was withheld an owner-only note."""
+    try:
+        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, OWNER_ONLY_NOTE)
+    except Exception:
+        logger.debug("ws_event_scope: SEL audit for an owner-only withhold failed", exc_info=True)
+
+
 def app_origin_frame(event_type: str, data: object) -> bool:
     """Whether a frame carries an app's own output.
 
     An app-published event, an app's push notification, or a setting on one of an
     app's notification channels. A socket with no app surface (a relayed teammate's,
-    see ``kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG``) is withheld all three.
+    see ``kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG``) is withheld all three, and a
+    note on an owner-only channel (``OWNER_ONLY_CHANNELS``) with them.
     """
     if event_type == _APP_EVENT_WS_TYPE:
         return True
     fields = data if isinstance(data, dict) else {}
     if event_type in _SOURCE_FILTERED_EVENTS:
-        return bool(notification_source_app(str(fields.get("source", ""))))
+        return teammate_withheld_note(fields)
     if event_type == _CHANNEL_SETTINGS_EVENT:
         return is_app_channel(str(fields.get("channel", "")))
     return False

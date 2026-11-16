@@ -25,7 +25,12 @@ from kiro_crew.dashboard.handlers.updates_verdict import _display_local_version
 from kiro_crew.dashboard.kiro_relay.caller import is_relay_teammate
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
-from kiro_crew.dashboard.ws_event_scope import app_origin_frame, audit_teammate_withheld
+from kiro_crew.dashboard.ws_event_scope import (
+    app_origin_frame,
+    audit_owner_only_withheld,
+    audit_teammate_withheld,
+    owner_only_note,
+)
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -384,6 +389,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
     # A relayed teammate has no app surface: an app's push notification is withheld
     # here as the WebSocket gate withholds it (``ws_event_scope.app_origin_frame``).
     relay_teammate = is_relay_teammate(request)
+    # Owner-only notes (``ws_event_scope.OWNER_ONLY_CHANNELS``) reach the owner alone.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    owner = is_owner_dashboard_request(request)
     resp = web.StreamResponse()
     resp.content_type = "text/event-stream"
     resp.headers["Cache-Control"] = "no-cache"
@@ -447,6 +456,10 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     else:
                         if relay_teammate and app_origin_frame(msg_type or "notification", note):
                             audit_teammate_withheld(msg_type or "notification")
+                            continue
+                        if not owner and owner_only_note(note):
+                            # Names the owner's own accounts: the owner's stream only.
+                            audit_owner_only_withheld(msg_type or "notification")
                             continue
                         payload = json.dumps(note)
                         await send("notification", payload)

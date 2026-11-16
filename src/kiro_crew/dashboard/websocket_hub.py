@@ -443,6 +443,20 @@ class WebSocketHub:
                 if isinstance(slug, str) and slug:
                     pending.add(slug)
                 return False
+        if msg_type == "notification":
+            # A note on an owner-only channel names the owner's own accounts (the
+            # Team Crews their sign-in can open): only the owner's sockets get it,
+            # whatever else this socket may receive.
+            from kiro_crew.dashboard.ws_event_scope import (
+                audit_owner_only_withheld,
+                owner_only_note,
+            )
+
+            if owner_only_note(data) and ws not in (
+                getattr(self._owner, "_owner_ws_clients", None) or set()
+            ):
+                audit_owner_only_withheld(msg_type)
+                return False
         if ws.get(RELAY_TEAMMATE_WS_FLAG, False):
             # A relayed teammate is a dashboard user with no app surface: the
             # remote limits refuse every app route, so the app frames the

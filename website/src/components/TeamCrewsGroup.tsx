@@ -16,17 +16,22 @@
  * shortcut: each Crew opens in its own window. The row's `onOpen` is the one
  * switch point if Team Crews later open in the main window.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import { ExternalLink } from 'lucide-react'
 import type { RelayCrewEntry } from '../api/client'
 import {
-  isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
-  type RelayListRefusal,
+  clearRelayCrewsUnseen, fetchRelayCrewsNow, isRelayCrewOnline, openRelayCrew, recordRelayCrewsSeen, RELAY_VIEWER_CREWS_KEY, relayCrewStatusText,
+  relayRefusalText, relayRetryable, useRelayViewerCrews, type RelayListRefusal,
 } from '../hooks/useRelayViewerCrews'
 import InstanceTabBar from './InstanceTabBar'
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
+import { i18nT } from '../i18n/t'
+import { joinSentences } from '../i18n/format'
 
 /** One Team Crew. A failed Open keeps the menu open and shows why under the row.
  *  The agent hand-off is a sibling menu item, so the keyboard reaches it. */
@@ -62,7 +67,14 @@ function TeamCrewItem({ crew, refusal, onOpen }: {
           aria-hidden
         />
         <span className="flex flex-col min-w-0 flex-1">
-          <span className="truncate">{crew.name}</span>
+          <span className="flex items-center gap-1.5 min-w-0">
+            <span className="truncate">{crew.name}</span>
+            {crew.unseen ? (
+              <span data-testid="relay-crew-new" className="shrink-0 text-[11px] font-semibold text-accent">
+                {t('components.relayCrews.new_crew')}
+              </span>
+            ) : null}
+          </span>
           <span className="truncate text-[12px] text-muted">{type} · {relayCrewStatusText(crew)}</span>
         </span>
         <span className="shrink-0 text-muted" title={t('components.relayCrews.opens_own_window')}>
@@ -139,7 +151,39 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
   close: () => void
 }) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const [refusals, setRefusals] = useState<Record<string, string>>({})
+  // The group renders only while the menu is open, so showing it is seeing its
+  // new Crews: the gateway is told now, and the marks stay until the menu closes
+  // so the person can still tell which rows are new. Only IDs the gateway saved
+  // lose their mark; a reply that lands after the menu closed clears them then.
+  const sentUnseen = useRef<Set<string>>(new Set())
+  const savedUnseen = useRef<string[]>([])
+  const open = useRef(true)
+  const [seenFailed, setSeenFailed] = useState(false)
+  const unseenKey = crews.filter(c => c.unseen).map(c => c.endpointId).join(',')
+  useEffect(() => {
+    const fresh = unseenKey ? unseenKey.split(',').filter(id => !sentUnseen.current.has(id)) : []
+    if (fresh.length === 0) return
+    fresh.forEach(id => sentUnseen.current.add(id))
+    void recordRelayCrewsSeen(fresh).then(({ saved, failed }) => {
+      if (!open.current) {
+        void clearRelayCrewsUnseen(queryClient, saved)
+        return
+      }
+      savedUnseen.current.push(...saved)
+      if (failed) setSeenFailed(true)
+    })
+  }, [unseenKey, queryClient])
+  useEffect(() => {
+    // The ref object, not its value: the cleanup must see every ID saved by then.
+    const saved = savedUnseen
+    open.current = true
+    return () => {
+      open.current = false
+      void clearRelayCrewsUnseen(queryClient, saved.current)
+    }
+  }, [queryClient])
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
       const { [endpointId]: _dropped, ...rest } = prev
@@ -156,6 +200,14 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
       <DropdownMenuLabel>
         {t('components.relayCrews.group_team_crews')}
       </DropdownMenuLabel>
+      {seenFailed && (
+        <>
+          <div className="px-3 pb-1">
+            <ErrorNotice id="relay-crews-seen-failed" variant="inline" message={t('components.relayCrews.seen_not_saved')} testId="relay-crews-seen-failed" />
+          </div>
+          <ErrorNoticeMenuItem Item={DropdownMenuItem} message={t('components.relayCrews.seen_not_saved')} describedBy="relay-crews-seen-failed" />
+        </>
+      )}
       {refusal
         ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} />
         : crews.length === 0
@@ -171,13 +223,135 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
  *  and the group has a Crew or a notice (sign-in, setup or load failure) to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
   const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
+  const [openRefusal, dismissOpenRefusal] = useOpenFromNote(hidden || refusal !== null, crews)
   return (
     <InstanceTabBar
       variant={variant}
+      extraNew={!hidden && refusal === null && crews.some(c => c.unseen)}
       // An empty list passes nothing, so the bar stays as it is without the relay.
       extraGroups={hidden || (refusal === null && crews.length === 0) ? undefined : close => (
         <TeamCrewsGroup crews={crews} refusal={refusal} retry={retry} retrying={retrying} close={close} />
       )}
+      extraNotice={openRefusal ? (
+        <ErrorNotice
+          variant="inline"
+          // The bar's list-failure notice's classes: only the message shrinks, so the
+          // icon, the hand-off and the dismiss stay whole; the tooltip has it all.
+          className="tb-crew-notice ml-2 min-w-0 max-w-[420px]"
+          messageClassName="line-clamp-1 tb-crew-notice-msg"
+          message={openRefusal}
+          messageTooltip={openRefusal}
+          onDismiss={dismissOpenRefusal}
+          // As the bar's own list-failure notice: the bar holds no draft.
+          askAgent
+          testId="relay-crew-open-refusal"
+        />
+      ) : undefined}
     />
   )
+}
+
+/** The query a "You've been added" note's Open action sets on the chat page
+ *  (`relay_viewer/crew_notices.py`). */
+export const OPEN_RELAY_CREW_PARAM = 'relay_crew'
+
+/** Open the Crew a note's Open action names, as its row would. The query is
+ *  removed once it is decided, so a reload or Back does not open it again.
+ *  `waiting` while the list is hidden or its read failed: the Open stays in the
+ *  query until a read that succeeded can say whether the Crew is listed. A Crew
+ *  missing from the cached list gets one fresh read first (this window may have
+ *  read the list before the grant another window announced); only a fresh read
+ *  without it says it is gone. A failed open says why in the top bar. */
+function useOpenFromNote(waiting: boolean, crews: RelayCrewEntry[]): [string | null, () => void] {
+  const [params, setParams] = useSearchParams()
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
+  const queryClient = useQueryClient()
+  const [refusal, setRefusal] = useState<string | null>(null)
+  const wanted = params.get(OPEN_RELAY_CREW_PARAM)
+  // Unrelated cache changes must not cancel this Open's fresh read.
+  const cached = crews.find(c => c.endpointId === wanted)
+  // The query lingers for a render after it is removed, so one Open opens once.
+  const handled = useRef<string | null>(null)
+  // The ID a fresh read was made for, so a missing Crew is read for once.
+  const reread = useRef<string | null>(null)
+  useEffect(() => {
+    if (!wanted) {
+      handled.current = null
+      reread.current = null
+      return
+    }
+    if (waiting || handled.current === wanted) return
+    let stale = false
+    const decide = (crew: RelayCrewEntry | undefined) => {
+      if (stale || !renderedLocationIsCurrent()) return
+      handled.current = wanted
+      setParams(prev => {
+        const next = new URLSearchParams(prev)
+        next.delete(OPEN_RELAY_CREW_PARAM)
+        return next
+      }, { replace: true })
+      if (!crew) {
+        // Not listed by a read just made: no name to show, and most likely the
+        // access was taken back.
+        setRefusal(i18nT('components.relayCrews.note_crew_gone'))
+        return
+      }
+      setRefusal(null)
+      void openRelayCrew(crew.endpointId).then(res => {
+        if (!res.ok) {
+          // Named: the switcher beside it still shows the local Crew.
+          setRefusal(joinSentences([
+            i18nT('components.relayCrews.open_crew_failed', { name: crew.name }),
+            relayRefusalText(res.error),
+          ]))
+          return
+        }
+        void recordRelayCrewsSeen([crew.endpointId]).then(({ saved, failed }) => {
+          void clearRelayCrewsUnseen(queryClient, saved)
+          // The Crew opened; only its New mark wasn't saved, so it will show again.
+          if (failed) setRefusal(i18nT('components.relayCrews.seen_not_saved'))
+        })
+      })
+    }
+    if (cached) {
+      decide(cached)
+      return
+    }
+    // A fresh read is already in flight for this Open: its answer decides.
+    if (reread.current === wanted) return
+    // Missing from the cached list: read it once more and decide only from that
+    // answer. If that read fails, the list query is read again and the Open is
+    // settled from that read's own result, not from whether the cached array
+    // changed: a refetch that returns the same list keeps the same array, so
+    // nothing would run this again. If the list can't be read either, the Open
+    // stays pending (the next read that succeeds runs this again) and the top bar
+    // says the list couldn't load.
+    reread.current = wanted
+    fetchRelayCrewsNow().then(
+      fresh => {
+        if (handled.current !== wanted) decide(fresh.crews.find(c => c.endpointId === wanted))
+      },
+      () => {
+        if (stale || !renderedLocationIsCurrent()) return
+        const startedAt = Date.now()
+        void queryClient.refetchQueries({ queryKey: RELAY_VIEWER_CREWS_KEY }).then(() => {
+          if (stale || !renderedLocationIsCurrent()) return
+          reread.current = null
+          if (handled.current === wanted) return
+          const read = queryClient.getQueryState<{ crews: RelayCrewEntry[] }>(RELAY_VIEWER_CREWS_KEY)
+          if (read?.status === 'success' && read.data && read.dataUpdatedAt >= startedAt) {
+            decide(read.data.crews.find(c => c.endpointId === wanted))
+            return
+          }
+          setRefusal(i18nT('components.relayCrews.refusal_list_generic'))
+        })
+      },
+    )
+    return () => {
+      // A later Open or navigation owns the URL now, not this read's answer.
+      stale = true
+      reread.current = null
+    }
+  }, [wanted, waiting, cached, setParams, queryClient, renderedLocationIsCurrent])
+  return [refusal, () => setRefusal(null)]
 }
